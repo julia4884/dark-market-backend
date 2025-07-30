@@ -1,74 +1,59 @@
 import express from "express";
-import sqlite3 from "sqlite3";
-import bcrypt from "bcrypt";
-import bodyParser from "body-parser";
 import cors from "cors";
+import sqlite3 from "sqlite3";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
 import multer from "multer";
 import path from "path";
-import { fileURLToPath } from "url";
 import fs from "fs";
 
 const app = express();
 app.use(cors());
-app.use(bodyParser.json());
+app.use(express.json());
+app.use("/uploads", express.static("uploads"));
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const db = new sqlite3.Database("./database.sqlite");
 
-// === Разделы ===
-const sections = ["images", "books", "games", "movies", "music", "apps", "tools"];
-sections.forEach(section => {
-    const dir = path.join(__dirname, "uploads", section);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    app.use(`/${section}`, express.static(dir));
-});
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+// JWT секрет
+const SECRET_KEY = "your_secret_key";
 
-const db = new sqlite3.Database("./users.db");
-const SECRET_KEY = "dark_secret_key";
-
-// === Таблица пользователей ===
-db.run(`CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL,
-    username TEXT NOT NULL,
-    role TEXT DEFAULT 'user',
-    subscription TEXT DEFAULT 'Нет',
-    photo TEXT,
-    about TEXT,
-    banned INTEGER DEFAULT 0
-)`);
-
-// === Таблицы для разделов ===
-sections.forEach(section => {
-    db.run(`CREATE TABLE IF NOT EXISTS ${section} (
+// === Создание таблиц ===
+db.serialize(() => {
+    db.run(`CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        filename TEXT NOT NULL,
+        email TEXT UNIQUE,
+        password TEXT,
+        username TEXT,
+        role TEXT DEFAULT 'user',
+        subscription TEXT DEFAULT 'none',
+        about TEXT,
+        photo TEXT,
+        blocked INTEGER DEFAULT 0
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS files (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        section TEXT,
+        filename TEXT,
+        originalname TEXT,
         price REAL DEFAULT 0,
-        cover TEXT
+        ownerId INTEGER,
+        blocked INTEGER DEFAULT 0,
+        FOREIGN KEY(ownerId) REFERENCES users(id)
     )`);
 
-    db.run(`CREATE TABLE IF NOT EXISTS purchases_${section} (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        userId INTEGER NOT NULL,
-        itemId INTEGER NOT NULL
-    )`);
+    // Создаём админа, если его нет
+    db.get("SELECT * FROM users WHERE email = ?", ["juliaangelss26@gmail.com"], (err, row) => {
+        if (!row) {
+            bcrypt.hash("dark4884", 10, (err, hash) => {
+                db.run("INSERT INTO users (email, password, username, role, subscription) VALUES (?, ?, ?, 'admin', 'Разработчик')",
+                    ["juliaangelss26@gmail.com", hash, "administrator"]);
+            });
+        }
+    });
 });
 
-// === Создание админа ===
-db.get("SELECT * FROM users WHERE role = 'admin'", (err, row) => {
-    if (!row) {
-        const hash = bcrypt.hashSync("dark4884", 10);
-        db.run("INSERT INTO users (email, password, username, role, subscription) VALUES (?, ?, ?, ?, ?)",
-            ["juliaangelss26@gmail.com", hash, "administrator", "admin", "Разработчик"]);
-        console.log("✅ Админ создан");
-    }
-});
-
-// === JWT Middleware ===
+// === Middleware для проверки токена ===
 function authenticateToken(req, res, next) {
     const authHeader = req.headers["authorization"];
     const token = authHeader && authHeader.split(" ")[1];
@@ -81,141 +66,105 @@ function authenticateToken(req, res, next) {
     });
 }
 
+// === Multer настройка для загрузки ===
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const section = req.body.section || "misc";
+        const dir = `uploads/${section}`;
+        fs.mkdirSync(dir, { recursive: true });
+        cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+        cb(null, Date.now() + path.extname(file.originalname));
+    }
+});
+const upload = multer({ storage });
+
 // === Регистрация ===
 app.post("/register", (req, res) => {
     const { email, password, username } = req.body;
-    if (!email || !password || !username) return res.status(400).json({ success: false, error: "Все поля обязательны" });
-
-    const hash = bcrypt.hashSync(password, 10);
-    db.run("INSERT INTO users (email, password, username) VALUES (?, ?, ?)",
-        [email, hash, username], err => {
-            if (err) return res.status(400).json({ success: false, error: "Email уже используется" });
+    bcrypt.hash(password, 10, (err, hash) => {
+        db.run("INSERT INTO users (email, password, username) VALUES (?, ?, ?)", 
+        [email, hash, username], function (err) {
+            if (err) return res.json({ success: false, error: "Email уже используется" });
             res.json({ success: true });
         });
+    });
 });
 
-// === Вход ===
+// === Логин ===
 app.post("/login", (req, res) => {
     const { email, password } = req.body;
     db.get("SELECT * FROM users WHERE email = ?", [email], (err, user) => {
-        if (err || !user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
-        if (user.banned) return res.status(403).json({ success: false, error: "Аккаунт заблокирован" });
-        if (!bcrypt.compareSync(password, user.password)) return res.status(403).json({ success: false, error: "Неверный пароль" });
-
-        const token = jwt.sign(
-            { id: user.id, email: user.email, username: user.username, role: user.role, subscription: user.subscription },
-            SECRET_KEY, { expiresIn: "2h" });
-
-        res.json({ success: true, token });
+        if (!user || user.blocked) return res.json({ success: false, error: "Пользователь не найден или заблокирован" });
+        bcrypt.compare(password, user.password, (err, result) => {
+            if (!result) return res.json({ success: false, error: "Неверный пароль" });
+            const token = jwt.sign({ id: user.id, role: user.role }, SECRET_KEY, { expiresIn: "2h" });
+            res.json({ success: true, token });
+        });
     });
 });
 
 // === Профиль ===
 app.get("/profile", authenticateToken, (req, res) => {
-    db.get("SELECT id, email, username, role, subscription, about, photo, banned FROM users WHERE id = ?",
-        [req.user.id], (err, user) => {
-            if (err || !user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
-            res.json({ success: true, ...user });
-        });
+    db.get("SELECT username, role, subscription, about, photo FROM users WHERE id = ?", [req.user.id], (err, user) => {
+        if (!user) return res.json({ success: false, error: "Пользователь не найден" });
+        res.json({ success: true, ...user });
+    });
 });
 
-// === Фото профиля ===
-const photoStorage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const dir = path.join(__dirname, "uploads", "photos");
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        cb(null, dir);
-    },
-    filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname)
+app.post("/profile/update", authenticateToken, (req, res) => {
+    const { about } = req.body;
+    db.run("UPDATE users SET about = ? WHERE id = ?", [about, req.user.id], (err) => {
+        if (err) return res.json({ success: false, error: "Ошибка обновления" });
+        res.json({ success: true });
+    });
 });
-const uploadPhoto = multer({ storage: photoStorage });
 
-app.post("/upload-photo", authenticateToken, uploadPhoto.single("photo"), (req, res) => {
-    if (!req.file) return res.status(400).json({ success: false, error: "Файл не получен" });
-
-    const photoPath = `/uploads/photos/${req.file.filename}`;
-    db.run("UPDATE users SET photo = ? WHERE id = ?", [photoPath, req.user.id], err => {
-        if (err) return res.status(500).json({ success: false, error: "Ошибка базы" });
+app.post("/profile/photo", authenticateToken, upload.single("photo"), (req, res) => {
+    const photoPath = `/${req.file.path}`;
+    db.run("UPDATE users SET photo = ? WHERE id = ?", [photoPath, req.user.id], (err) => {
+        if (err) return res.json({ success: false, error: "Ошибка сохранения фото" });
         res.json({ success: true, photo: photoPath });
     });
 });
 
-// === Универсальные маршруты для всех разделов ===
-function createUploadRoutes(section) {
-    const storage = multer.diskStorage({
-        destination: (req, file, cb) => cb(null, path.join(__dirname, "uploads", section)),
-        filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname)
-    });
-    const upload = multer({ storage });
-
-    // Загрузка
-    app.post(`/upload-${section}`, authenticateToken, upload.single("file"), (req, res) => {
-        if (!req.file) return res.status(400).json({ success: false, error: "Файл не получен" });
-        const { title, price } = req.body;
-        db.run(`INSERT INTO ${section} (title, filename, price) VALUES (?, ?, ?)`,
-            [title, req.file.filename, price],
-            function (err) {
-                if (err) return res.status(500).json({ success: false, error: "Ошибка базы" });
-                res.json({ success: true, id: this.lastID });
-            });
-    });
-
-    // Список
-    app.get(`/${section}/list`, (req, res) => {
-        db.all(`SELECT * FROM ${section}`, [], (err, rows) => {
-            if (err) return res.status(500).json({ success: false, error: "Ошибка базы" });
-            res.json({
-                success: true,
-                items: rows.map(r => ({
-                    id: r.id,
-                    title: r.title,
-                    price: r.price,
-                    filename: r.filename,
-                    free: r.price === 0
-                }))
-            });
+// === Загрузка файлов ===
+app.post("/upload", authenticateToken, upload.single("file"), (req, res) => {
+    const { section, price } = req.body;
+    db.run("INSERT INTO files (section, filename, originalname, price, ownerId) VALUES (?, ?, ?, ?, ?)",
+        [section, req.file.filename, req.file.originalname, price || 0, req.user.id],
+        function (err) {
+            if (err) return res.json({ success: false, error: "Ошибка загрузки" });
+            res.json({ success: true });
         });
+});
+
+// === Получение файлов раздела ===
+app.get("/files/:section", (req, res) => {
+    db.all("SELECT * FROM files WHERE section = ? AND blocked = 0", [req.params.section], (err, rows) => {
+        res.json({ success: true, files: rows });
     });
+});
 
-    // Покупка
-    app.post(`/buy-${section}`, authenticateToken, (req, res) => {
-        const { itemId } = req.body;
-        db.get(`SELECT price FROM ${section} WHERE id = ?`, [itemId], (err, item) => {
-            if (!item) return res.status(404).json({ success: false, error: "Файл не найден" });
-
-            if (item.price === 0) {
-                return res.json({ success: true, message: "Файл бесплатный, скачивайте без покупки!" });
-            }
-
-            db.run(`INSERT INTO purchases_${section} (userId, itemId) VALUES (?, ?)`,
-                [req.user.id, itemId], err => {
-                    if (err) return res.status(500).json({ success: false, error: "Ошибка покупки" });
-                    res.json({ success: true, message: "Покупка успешно совершена!" });
-                });
-        });
+// === Админ: блокировка пользователя ===
+app.post("/admin/block-user/:id", authenticateToken, (req, res) => {
+    if (req.user.role !== "admin") return res.status(403).json({ success: false, error: "Нет доступа" });
+    db.run("UPDATE users SET blocked = 1 WHERE id = ?", [req.params.id], (err) => {
+        if (err) return res.json({ success: false, error: "Ошибка блокировки" });
+        res.json({ success: true, message: "Пользователь заблокирован" });
     });
+});
 
-    // Проверка покупки
-    app.post(`/check-purchase-${section}`, authenticateToken, (req, res) => {
-        const { itemId } = req.body;
-        db.get(`SELECT * FROM ${section} WHERE id = ?`, [itemId], (err, item) => {
-            if (!item) return res.json({ success: false, purchased: false });
-
-            if (item.price === 0) {
-                return res.json({ success: true, purchased: true, file: item.filename });
-            }
-
-            db.get(`SELECT * FROM purchases_${section} WHERE userId = ? AND itemId = ?`,
-                [req.user.id, itemId], (err, row) => {
-                    if (row) res.json({ success: true, purchased: true, file: item.filename });
-                    else res.json({ success: true, purchased: false });
-                });
-        });
+// === Админ: блокировка файла ===
+app.post("/admin/block-file/:id", authenticateToken, (req, res) => {
+    if (req.user.role !== "admin") return res.status(403).json({ success: false, error: "Нет доступа" });
+    db.run("UPDATE files SET blocked = 1 WHERE id = ?", [req.params.id], (err) => {
+        if (err) return res.json({ success: false, error: "Ошибка блокировки файла" });
+        res.json({ success: true, message: "Файл заблокирован" });
     });
-}
+});
 
-sections.forEach(createUploadRoutes);
-
-// === Запуск ===
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`⚡ Dark Market Ultra запущен на порту ${PORT}`));
+// === Запуск сервера ===
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`🚀 Сервер запущен на порту ${PORT}`));

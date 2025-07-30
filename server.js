@@ -20,9 +20,11 @@ const __dirname = path.dirname(__filename);
 // Раздаём папки
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 app.use("/devfiles", express.static(path.join(__dirname, "devfiles")));
+app.use("/images", express.static(path.join(__dirname, "images")));
+app.use("/books", express.static(path.join(__dirname, "books")));
 
 const db = new sqlite3.Database("./users.db");
-const SECRET_KEY = "dark_secret_key"; // ❗ лучше вынести в .env
+const SECRET_KEY = "dark_secret_key"; // ⚠️ лучше вынести в .env
 
 // Создаём таблицы
 db.run(`CREATE TABLE IF NOT EXISTS users (
@@ -52,7 +54,7 @@ db.get("SELECT * FROM users WHERE role = 'admin'", (err, row) => {
     }
 });
 
-// Middleware для проверки токена
+// Middleware проверки токена
 function authenticateToken(req, res, next) {
     const authHeader = req.headers["authorization"];
     const token = authHeader && authHeader.split(" ")[1];
@@ -101,7 +103,7 @@ app.post("/login", (req, res) => {
     });
 });
 
-// 📌 Получение профиля
+// 📌 Профиль
 app.get("/profile", authenticateToken, (req, res) => {
     db.get("SELECT id, email, username, role, subscription, about, photo, banned FROM users WHERE id = ?", 
     [req.user.id], 
@@ -158,6 +160,22 @@ app.post("/upload-dev-files", authenticateToken, uploadDev.array("files"), (req,
         return res.status(400).json({ success: false, error: "Файлы не получены" });
     }
     res.json({ success: true, files: req.files.map(f => `/devfiles/${f.filename}`) });
+});
+
+// 📌 Список картинок
+app.get("/list-images", (req, res) => {
+    fs.readdir(path.join(__dirname, "images"), (err, files) => {
+        if (err) return res.status(500).json({ success: false, error: "Ошибка чтения папки" });
+        res.json(files);
+    });
+});
+
+// 📌 Список книг
+app.get("/list-books", (req, res) => {
+    fs.readdir(path.join(__dirname, "books"), (err, files) => {
+        if (err) return res.status(500).json({ success: false, error: "Ошибка чтения папки" });
+        res.json(files);
+    });
 });
 
 // 📌 Блокировка пользователя

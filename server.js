@@ -13,7 +13,7 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// Для работы с __dirname
+// Для __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -24,7 +24,7 @@ app.use("/images", express.static(path.join(__dirname, "images")));
 app.use("/books", express.static(path.join(__dirname, "books")));
 
 const db = new sqlite3.Database("./users.db");
-const SECRET_KEY = "dark_secret_key"; // ⚠️ лучше вынести в .env
+const SECRET_KEY = "dark_secret_key"; // ⚠️ Лучше вынести в .env
 
 // =================== Таблицы ===================
 db.run(`CREATE TABLE IF NOT EXISTS users (
@@ -48,6 +48,14 @@ db.run(`CREATE TABLE IF NOT EXISTS images (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
     filename TEXT NOT NULL,
+    price REAL DEFAULT 0
+)`);
+
+db.run(`CREATE TABLE IF NOT EXISTS books (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    cover TEXT,
     price REAL DEFAULT 0
 )`);
 
@@ -127,15 +135,11 @@ app.post("/profile/update", authenticateToken, (req, res) => {
     });
 });
 
-// =================== Загрузка фото ===================
-const storage = multer.diskStorage({
+// =================== Фото профиля ===================
+const upload = multer({ storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, "uploads/"),
-    filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-        cb(null, uniqueSuffix + "-" + file.originalname);
-    }
-});
-const upload = multer({ storage });
+    filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname)
+})});
 
 app.post("/upload-photo", authenticateToken, upload.single("photo"), (req, res) => {
     if (!req.file) return res.status(400).json({ success: false, error: "Файл не получен" });
@@ -147,82 +151,47 @@ app.post("/upload-photo", authenticateToken, upload.single("photo"), (req, res) 
     });
 });
 
-// =================== Загрузка файлов разработчика ===================
-const devStorage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, "devfiles/"),
-    filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-        cb(null, uniqueSuffix + "-" + file.originalname);
-    }
+// =================== Книги ===================
+const bookStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, "books/"),
+    filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname)
 });
-const uploadDev = multer({ storage: devStorage });
+const uploadBook = multer({ storage: bookStorage });
 
-app.post("/upload-dev-files", authenticateToken, uploadDev.array("files"), (req, res) => {
-    if (req.user.role !== "admin" && req.user.subscription !== "Разработчик") {
-        return res.status(403).json({ success: false, error: "Нет прав" });
-    }
-    if (!req.files || req.files.length === 0) {
-        return res.status(400).json({ success: false, error: "Файлы не получены" });
-    }
-    res.json({ success: true, files: req.files.map(f => `/devfiles/${f.filename}`) });
-});
-
-// =================== Картинки ===================
-const imgStorage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, "images/"),
-    filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-        cb(null, uniqueSuffix + "-" + file.originalname);
-    }
-});
-const uploadImg = multer({ storage: imgStorage });
-
-app.post("/upload-image", authenticateToken, uploadImg.single("image"), (req, res) => {
+app.post("/upload-book", authenticateToken, uploadBook.fields([{ name: "book" }, { name: "cover" }]), (req, res) => {
     if (req.user.role !== "admin" && req.user.subscription !== "Разработчик") {
         return res.status(403).json({ success: false, error: "Нет прав" });
     }
 
+    const bookFile = req.files["book"]?.[0];
+    const coverFile = req.files["cover"]?.[0];
     const { title, price } = req.body;
-    if (!req.file) return res.status(400).json({ success: false, error: "Файл не загружен" });
 
-    db.run("INSERT INTO images (title, filename, price) VALUES (?, ?, ?)", 
-        [title, req.file.filename, price || 0], 
+    if (!bookFile || !coverFile) {
+        return res.status(400).json({ success: false, error: "Файл книги и обложка обязательны" });
+    }
+
+    db.run("INSERT INTO books (title, filename, cover, price) VALUES (?, ?, ?, ?)", 
+        [title, bookFile.filename, coverFile.filename, price || 0], 
         function(err) {
-            if (err) return res.status(500).json({ success: false, error: "Ошибка сохранения" });
+            if (err) return res.status(500).json({ success: false, error: "Ошибка сохранения книги" });
             res.json({ success: true, id: this.lastID });
         }
     );
 });
 
-app.get("/images/list", (req, res) => {
-    db.all("SELECT * FROM images", [], (err, rows) => {
-        if (err) return res.status(500).json({ success: false, error: "Ошибка получения картинок" });
-
-        const images = rows.map(img => ({
-            id: img.id,
-            title: img.title,
-            preview: `/images/${img.filename}`,
-            price: img.price
-        }));
-
-        res.json({ success: true, images });
-    });
-});
-
-// Заглушка для покупки картинки
-app.post("/buy-image", authenticateToken, (req, res) => {
-    const { imageId } = req.body;
-    db.get("SELECT * FROM images WHERE id = ?", [imageId], (err, img) => {
-        if (err || !img) return res.status(404).json({ success: false, error: "Картинка не найдена" });
-        res.json({ success: true, message: `Оплата за '${img.title}' (${img.price}€) проведена (тест).` });
-    });
-});
-
-// =================== Книги ===================
 app.get("/list-books", (req, res) => {
-    fs.readdir(path.join(__dirname, "books"), (err, files) => {
-        if (err) return res.status(500).json({ success: false, error: "Ошибка чтения папки" });
-        res.json(files);
+    db.all("SELECT * FROM books", [], (err, rows) => {
+        if (err) return res.status(500).json({ success: false, error: "Ошибка получения книг" });
+        res.json(rows);
+    });
+});
+
+app.post("/buy-book", authenticateToken, (req, res) => {
+    const { bookName } = req.body;
+    db.get("SELECT * FROM books WHERE title = ?", [bookName], (err, book) => {
+        if (err || !book) return res.status(404).json({ success: false, error: "Книга не найдена" });
+        res.json({ success: true, message: `Оплата книги '${book.title}' (${book.price}€) проведена (тест).` });
     });
 });
 

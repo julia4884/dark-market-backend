@@ -13,27 +13,26 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// Пути
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Автоматически создаём папки
-const dirs = ["uploads", "uploads/profile", "uploads/files"];
+// Авто‑создание нужных папок
+const dirs = ["uploads", "uploads/profile", "uploads/files", "uploads/images", "uploads/books"];
 dirs.forEach(dir => {
     if (!fs.existsSync(path.join(__dirname, dir))) {
         fs.mkdirSync(path.join(__dirname, dir), { recursive: true });
     }
 });
 
-// Папки для статики
+// Статика
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
-app.use("/images", express.static(path.join(__dirname, "images")));
-app.use("/books", express.static(path.join(__dirname, "books")));
+app.use("/images", express.static(path.join(__dirname, "uploads/images")));
+app.use("/books", express.static(path.join(__dirname, "uploads/books")));
 
 const db = new sqlite3.Database("./users.db");
 const SECRET_KEY = "dark_secret_key";
 
-// Создание таблиц
+// Таблицы
 db.run(`CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT UNIQUE NOT NULL,
@@ -78,7 +77,7 @@ db.run(`CREATE TABLE IF NOT EXISTS purchases_images (
     imageId INTEGER NOT NULL
 )`);
 
-// Создание админа
+// Создаём админа
 db.get("SELECT * FROM users WHERE role = 'admin'", (err, row) => {
     if (!row) {
         const hash = bcrypt.hashSync("dark4884", 10);
@@ -100,6 +99,8 @@ function authenticateToken(req, res, next) {
         next();
     });
 }
+
+// === Пользователи ===
 
 // Регистрация
 app.post("/register", (req, res) => {
@@ -156,7 +157,7 @@ app.post("/update-profile", authenticateToken, (req, res) => {
     });
 });
 
-// Загрузка фото профиля
+// === Фото профиля ===
 const avatarStorage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, path.join(__dirname, "uploads/profile")),
     filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname)
@@ -172,6 +173,63 @@ app.post("/upload-photo", authenticateToken, uploadAvatar.single("profilePhoto")
         res.json({ success: true, url: photoPath });
     });
 });
+
+// === Галерея картинок ===
+const imageStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, path.join(__dirname, "uploads/images")),
+    filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname)
+});
+const uploadImage = multer({ storage: imageStorage });
+
+app.post("/upload-image", authenticateToken, uploadImage.single("image"), (req, res) => {
+    if (!req.file) return res.status(400).json({ success: false, error: "Файл не получен" });
+    const { title, price } = req.body;
+    db.run("INSERT INTO images (title, filename, price) VALUES (?, ?, ?)", 
+        [title, req.file.filename, price], 
+        function(err) {
+            if (err) return res.status(500).json({ success: false, error: "Ошибка сохранения" });
+            res.json({ success: true, id: this.lastID });
+        }
+    );
+});
+
+app.get("/images/list", (req, res) => {
+    db.all("SELECT * FROM images", [], (err, rows) => {
+        if (err) return res.status(500).json({ success: false, error: "Ошибка базы данных" });
+        res.json({ success: true, images: rows.map(r => ({
+            id: r.id,
+            title: r.title,
+            price: r.price,
+            preview: "/images/" + r.filename
+        })) });
+    });
+});
+
+app.post("/buy-image", authenticateToken, (req, res) => {
+    const { imageId } = req.body;
+    db.run("INSERT INTO purchases_images (userId, imageId) VALUES (?, ?)", [req.user.id, imageId], (err) => {
+        if (err) return res.status(500).json({ success: false, error: "Ошибка покупки" });
+        res.json({ success: true, message: "Картинка куплена!" });
+    });
+});
+
+app.post("/check-purchase-image", authenticateToken, (req, res) => {
+    const { imageId } = req.body;
+    db.get("SELECT * FROM purchases_images WHERE userId = ? AND imageId = ?", 
+        [req.user.id, imageId], (err, row) => {
+            if (row) {
+                db.get("SELECT filename FROM images WHERE id = ?", [imageId], (err, img) => {
+                    if (img) {
+                        res.json({ success: true, purchased: true, file: img.filename });
+                    } else res.json({ success: false });
+                });
+            } else {
+                res.json({ success: true, purchased: false });
+            }
+        });
+});
+
+// === Книги (по аналогии с картинками, если нужно) ===
 
 // Админка
 app.post("/block-user", authenticateToken, (req, res) => {

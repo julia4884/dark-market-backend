@@ -7,22 +7,24 @@ import jwt from "jsonwebtoken";
 import multer from "multer";
 import path from "path";
 import { fileURLToPath } from "url";
+import fs from "fs";
 
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// Для работы с __dirname (так как мы в ES-модулях)
+// Для работы с __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Раздаём папку uploads как статическую
+// Раздаём папки
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+app.use("/devfiles", express.static(path.join(__dirname, "devfiles")));
 
 const db = new sqlite3.Database("./users.db");
-const SECRET_KEY = "dark_secret_key"; // ❗ Замени на что-то уникальное
+const SECRET_KEY = "dark_secret_key"; // ❗ лучше вынести в .env
 
-// Создаём таблицу пользователей
+// Создаём таблицы
 db.run(`CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT UNIQUE NOT NULL,
@@ -31,7 +33,13 @@ db.run(`CREATE TABLE IF NOT EXISTS users (
     role TEXT DEFAULT 'user',
     subscription TEXT DEFAULT 'Нет',
     photo TEXT,
-    about TEXT
+    about TEXT,
+    banned INTEGER DEFAULT 0
+)`);
+
+db.run(`CREATE TABLE IF NOT EXISTS blocked_apps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    appName TEXT UNIQUE NOT NULL
 )`);
 
 // Создаём администратора, если его нет
@@ -78,6 +86,7 @@ app.post("/login", (req, res) => {
     const { email, password } = req.body;
     db.get("SELECT * FROM users WHERE email = ?", [email], (err, user) => {
         if (err || !user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
+        if (user.banned) return res.status(403).json({ success: false, error: "Аккаунт заблокирован" });
         if (!bcrypt.compareSync(password, user.password)) {
             return res.status(403).json({ success: false, error: "Неверный пароль" });
         }
@@ -94,7 +103,7 @@ app.post("/login", (req, res) => {
 
 // 📌 Получение профиля
 app.get("/profile", authenticateToken, (req, res) => {
-    db.get("SELECT id, email, username, role, subscription, about, photo FROM users WHERE id = ?", 
+    db.get("SELECT id, email, username, role, subscription, about, photo, banned FROM users WHERE id = ?", 
     [req.user.id], 
     (err, user) => {
         if (err || !user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
@@ -128,6 +137,50 @@ app.post("/upload-photo", authenticateToken, upload.single("photo"), (req, res) 
     db.run("UPDATE users SET photo = ? WHERE id = ?", [photoPath, req.user.id], (err) => {
         if (err) return res.status(500).json({ success: false, error: "Ошибка сохранения фото" });
         res.json({ success: true, url: photoPath });
+    });
+});
+
+// 📌 Загрузка файлов разработчика
+const devStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, "devfiles/"),
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+        cb(null, uniqueSuffix + "-" + file.originalname);
+    }
+});
+const uploadDev = multer({ storage: devStorage });
+
+app.post("/upload-dev-files", authenticateToken, uploadDev.array("files"), (req, res) => {
+    if (req.user.role !== "admin" && req.user.subscription !== "Разработчик") {
+        return res.status(403).json({ success: false, error: "Нет прав" });
+    }
+    if (!req.files || req.files.length === 0) {
+        return res.status(400).json({ success: false, error: "Файлы не получены" });
+    }
+    res.json({ success: true, files: req.files.map(f => `/devfiles/${f.filename}`) });
+});
+
+// 📌 Блокировка пользователя
+app.post("/admin/block-user", authenticateToken, (req, res) => {
+    if (req.user.role !== "admin" || req.user.email !== "juliaangelss26@gmail.com") {
+        return res.status(403).json({ success: false, error: "Нет прав администратора" });
+    }
+    const { email } = req.body;
+    db.run("UPDATE users SET banned = 1 WHERE email = ?", [email], function(err) {
+        if (err || this.changes === 0) return res.status(400).json({ success: false, error: "Пользователь не найден" });
+        res.json({ success: true, message: "Пользователь заблокирован" });
+    });
+});
+
+// 📌 Блокировка приложения
+app.post("/admin/block-app", authenticateToken, (req, res) => {
+    if (req.user.role !== "admin" || req.user.email !== "juliaangelss26@gmail.com") {
+        return res.status(403).json({ success: false, error: "Нет прав администратора" });
+    }
+    const { appName } = req.body;
+    db.run("INSERT OR IGNORE INTO blocked_apps (appName) VALUES (?)", [appName], (err) => {
+        if (err) return res.status(500).json({ success: false, error: "Ошибка блокировки" });
+        res.json({ success: true, message: "Приложение заблокировано" });
     });
 });
 

@@ -16,7 +16,7 @@ app.use(bodyParser.json());
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Раздаём папки
+// Папки
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 app.use("/images", express.static(path.join(__dirname, "images")));
 app.use("/books", express.static(path.join(__dirname, "books")));
@@ -24,7 +24,7 @@ app.use("/books", express.static(path.join(__dirname, "books")));
 const db = new sqlite3.Database("./users.db");
 const SECRET_KEY = "dark_secret_key";
 
-// =================== Таблицы ===================
+// Создание таблиц
 db.run(`CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT UNIQUE NOT NULL,
@@ -57,7 +57,6 @@ db.run(`CREATE TABLE IF NOT EXISTS books (
     price REAL DEFAULT 0
 )`);
 
-// Таблицы покупок
 db.run(`CREATE TABLE IF NOT EXISTS purchases_books (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     userId INTEGER NOT NULL,
@@ -70,7 +69,7 @@ db.run(`CREATE TABLE IF NOT EXISTS purchases_images (
     imageId INTEGER NOT NULL
 )`);
 
-// =================== Создание администратора ===================
+// Создание админа
 db.get("SELECT * FROM users WHERE role = 'admin'", (err, row) => {
     if (!row) {
         const hash = bcrypt.hashSync("dark4884", 10);
@@ -80,7 +79,7 @@ db.get("SELECT * FROM users WHERE role = 'admin'", (err, row) => {
     }
 });
 
-// =================== Middleware ===================
+// Middleware
 function authenticateToken(req, res, next) {
     const authHeader = req.headers["authorization"];
     const token = authHeader && authHeader.split(" ")[1];
@@ -93,7 +92,7 @@ function authenticateToken(req, res, next) {
     });
 }
 
-// =================== Регистрация / Логин ===================
+// Регистрация / Логин
 app.post("/register", (req, res) => {
     const { email, password, username } = req.body;
     if (!email || !password || !username) {
@@ -128,7 +127,7 @@ app.post("/login", (req, res) => {
     });
 });
 
-// =================== Профиль ===================
+// Профиль
 app.get("/profile", authenticateToken, (req, res) => {
     db.get("SELECT id, email, username, role, subscription, about, photo, banned FROM users WHERE id = ?", 
     [req.user.id], 
@@ -138,115 +137,63 @@ app.get("/profile", authenticateToken, (req, res) => {
     });
 });
 
-// =================== Книги ===================
-const bookStorage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, "books/"),
+// Обновление профиля
+app.post("/update-profile", authenticateToken, (req, res) => {
+    const { nickname, about } = req.body;
+    db.run("UPDATE users SET username = ?, about = ? WHERE id = ?", [nickname, about, req.user.id], (err) => {
+        if (err) return res.status(500).json({ success: false, error: "Ошибка обновления профиля" });
+        res.json({ success: true, message: "Профиль обновлён" });
+    });
+});
+
+// Загрузка фото профиля
+const avatarStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, "uploads/profile"),
     filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname)
 });
-const uploadBook = multer({ storage: bookStorage });
+const uploadAvatar = multer({ storage: avatarStorage });
 
-app.post("/upload-book", authenticateToken, uploadBook.fields([{ name: "book" }, { name: "cover" }]), (req, res) => {
+app.post("/upload-photo", authenticateToken, uploadAvatar.single("avatar"), (req, res) => {
+    const photoPath = "/uploads/profile/" + req.file.filename;
+    db.run("UPDATE users SET photo = ? WHERE id = ?", [photoPath, req.user.id], (err) => {
+        if (err) return res.status(500).json({ success: false, error: "Ошибка сохранения фото" });
+        res.json({ success: true, url: photoPath });
+    });
+});
+
+// Загрузка файлов (универсально)
+const fileStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, "uploads/files"),
+    filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname)
+});
+const uploadFile = multer({ storage: fileStorage });
+
+app.post("/upload-file", authenticateToken, uploadFile.single("file"), (req, res) => {
     if (req.user.role !== "admin" && req.user.subscription !== "Разработчик") {
         return res.status(403).json({ success: false, error: "Нет прав" });
     }
-
-    const bookFile = req.files["book"]?.[0];
-    const coverFile = req.files["cover"]?.[0];
-    const { title, price } = req.body;
-
-    db.run("INSERT INTO books (title, filename, cover, price) VALUES (?, ?, ?, ?)", 
-        [title, bookFile.filename, coverFile.filename, price || 0], 
-        function(err) {
-            if (err) return res.status(500).json({ success: false, error: "Ошибка сохранения книги" });
-            res.json({ success: true, id: this.lastID });
-        }
-    );
+    res.json({ success: true, url: "/uploads/files/" + req.file.filename });
 });
 
-app.get("/list-books", (req, res) => {
-    db.all("SELECT * FROM books", [], (err, rows) => {
-        if (err) return res.status(500).json({ success: false, error: "Ошибка получения книг" });
-        res.json({ success: true, books: rows });
+// Админка
+app.post("/block-user", authenticateToken, (req, res) => {
+    if (req.user.role !== "admin") return res.status(403).json({ success: false, error: "Нет прав" });
+    const { email } = req.body;
+    db.run("UPDATE users SET banned = 1 WHERE email = ?", [email], (err) => {
+        if (err) return res.status(500).json({ success: false, error: "Ошибка блокировки" });
+        res.json({ success: true, message: "Пользователь заблокирован" });
     });
 });
 
-app.post("/buy-book", authenticateToken, (req, res) => {
-    const { bookId } = req.body;
-    db.get("SELECT * FROM books WHERE id = ?", [bookId], (err, book) => {
-        if (err || !book) return res.status(404).json({ success: false, error: "Книга не найдена" });
-        db.run("INSERT INTO purchases_books (userId, bookId) VALUES (?, ?)", [req.user.id, bookId], (err) => {
-            if (err) return res.status(500).json({ success: false, error: "Ошибка покупки" });
-            res.json({ success: true, message: "Книга куплена" });
-        });
+app.post("/block-app", authenticateToken, (req, res) => {
+    if (req.user.role !== "admin") return res.status(403).json({ success: false, error: "Нет прав" });
+    const { appName } = req.body;
+    db.run("INSERT INTO blocked_apps (appName) VALUES (?)", [appName], (err) => {
+        if (err) return res.status(500).json({ success: false, error: "Ошибка блокировки приложения" });
+        res.json({ success: true, message: "Приложение заблокировано" });
     });
 });
 
-app.post("/check-purchase", authenticateToken, (req, res) => {
-    const { bookId } = req.body;
-    db.get("SELECT * FROM purchases_books WHERE userId = ? AND bookId = ?", [req.user.id, bookId], (err, row) => {
-        if (row) {
-            db.get("SELECT filename FROM books WHERE id = ?", [bookId], (err, book) => {
-                res.json({ success: true, purchased: true, file: book.filename });
-            });
-        } else {
-            res.json({ success: true, purchased: false });
-        }
-    });
-});
-
-// =================== Картинки ===================
-const imageStorage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, "images/"),
-    filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname)
-});
-const uploadImage = multer({ storage: imageStorage });
-
-app.post("/upload-image", authenticateToken, uploadImage.single("image"), (req, res) => {
-    if (req.user.role !== "admin" && req.user.subscription !== "Разработчик") {
-        return res.status(403).json({ success: false, error: "Нет прав" });
-    }
-
-    const { title, price } = req.body;
-    db.run("INSERT INTO images (title, filename, price) VALUES (?, ?, ?)", 
-        [title, req.file.filename, price || 0], 
-        function(err) {
-            if (err) return res.status(500).json({ success: false, error: "Ошибка сохранения картинки" });
-            res.json({ success: true, id: this.lastID });
-        }
-    );
-});
-
-app.get("/images/list", (req, res) => {
-    db.all("SELECT * FROM images", [], (err, rows) => {
-        if (err) return res.status(500).json({ success: false, error: "Ошибка получения картинок" });
-        res.json({ success: true, images: rows });
-    });
-});
-
-app.post("/buy-image", authenticateToken, (req, res) => {
-    const { imageId } = req.body;
-    db.get("SELECT * FROM images WHERE id = ?", [imageId], (err, image) => {
-        if (err || !image) return res.status(404).json({ success: false, error: "Картинка не найдена" });
-        db.run("INSERT INTO purchases_images (userId, imageId) VALUES (?, ?)", [req.user.id, imageId], (err) => {
-            if (err) return res.status(500).json({ success: false, error: "Ошибка покупки" });
-            res.json({ success: true, message: "Картинка куплена" });
-        });
-    });
-});
-
-app.post("/check-purchase-image", authenticateToken, (req, res) => {
-    const { imageId } = req.body;
-    db.get("SELECT * FROM purchases_images WHERE userId = ? AND imageId = ?", [req.user.id, imageId], (err, row) => {
-        if (row) {
-            db.get("SELECT filename FROM images WHERE id = ?", [imageId], (err, image) => {
-                res.json({ success: true, purchased: true, file: image.filename });
-            });
-        } else {
-            res.json({ success: true, purchased: false });
-        }
-    });
-});
-
-// =================== Запуск ===================
+// Запуск
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`⚡ Backend работает на порту ${PORT}`));

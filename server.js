@@ -4,10 +4,20 @@ import bcrypt from "bcrypt";
 import bodyParser from "body-parser";
 import cors from "cors";
 import jwt from "jsonwebtoken";
+import multer from "multer";
+import path from "path";
+import { fileURLToPath } from "url";
 
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
+
+// Для работы с __dirname (так как мы в ES-модулях)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Раздаём папку uploads как статическую
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 const db = new sqlite3.Database("./users.db");
 const SECRET_KEY = "dark_secret_key"; // ❗ Замени на что-то уникальное
@@ -24,7 +34,7 @@ db.run(`CREATE TABLE IF NOT EXISTS users (
     about TEXT
 )`);
 
-// Создаём администратора, если таблица пустая
+// Создаём администратора, если его нет
 db.get("SELECT * FROM users WHERE role = 'admin'", (err, row) => {
     if (!row) {
         const hash = bcrypt.hashSync("dark4884", 10);
@@ -101,6 +111,26 @@ app.post("/profile/update", authenticateToken, (req, res) => {
     });
 });
 
-// Запуск сервера
+// 📌 Загрузка фото
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, "uploads/"),
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+        cb(null, uniqueSuffix + "-" + file.originalname);
+    }
+});
+const upload = multer({ storage });
+
+app.post("/upload-photo", authenticateToken, upload.single("photo"), (req, res) => {
+    if (!req.file) return res.status(400).json({ success: false, error: "Файл не получен" });
+
+    const photoPath = `/uploads/${req.file.filename}`;
+    db.run("UPDATE users SET photo = ? WHERE id = ?", [photoPath, req.user.id], (err) => {
+        if (err) return res.status(500).json({ success: false, error: "Ошибка сохранения фото" });
+        res.json({ success: true, url: photoPath });
+    });
+});
+
+// 🚀 Запуск сервера
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`⚡ Backend работает на порту ${PORT}`));

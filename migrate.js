@@ -1,66 +1,93 @@
 import sqlite3 from "sqlite3";
+import { open } from "sqlite";
+import fs from "fs";
+import path from "path";
 
-const db = new sqlite3.Database("./database.sqlite");
+(async () => {
+  // Создаём или подключаем базу
+  const db = await open({
+    filename: "./database.sqlite",
+    driver: sqlite3.Database
+  });
 
-db.serialize(() => {
-    // Таблица пользователей
-    db.run(`CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT UNIQUE,
-        password TEXT,
-        username TEXT,
-        role TEXT DEFAULT 'user', -- user/admin
-        subscription TEXT DEFAULT 'none', -- none/premium/dev
-        about TEXT,
-        photo TEXT,
-        blocked INTEGER DEFAULT 0,
-        token TEXT
-    )`);
+  console.log("🚀 База подключена.");
 
-    // Таблица файлов
-    db.run(`CREATE TABLE IF NOT EXISTS files (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        section TEXT, -- games, movies, music, images, books, apps, tools
-        filename TEXT,
-        originalname TEXT,
-        price REAL DEFAULT 0,
-        ownerId INTEGER,
-        blocked INTEGER DEFAULT 0,
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(ownerId) REFERENCES users(id)
-    )`);
+  // Создаём таблицу пользователей
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT UNIQUE,
+      password TEXT,
+      username TEXT,
+      role TEXT DEFAULT 'user',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
 
-    // Таблица покупок
-    db.run(`CREATE TABLE IF NOT EXISTS purchases (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        userId INTEGER,
-        fileId INTEGER,
-        purchasedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(userId) REFERENCES users(id),
-        FOREIGN KEY(fileId) REFERENCES files(id)
-    )`);
+  // Создаём таблицу файлов
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS files (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT,
+      filename TEXT,
+      filepath TEXT,
+      uploader_id INTEGER,
+      section TEXT,
+      price REAL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (uploader_id) REFERENCES users(id)
+    )
+  `);
 
-    // Создание админского аккаунта, если его нет
-    db.get(`SELECT * FROM users WHERE email = ?`, ["juliaangelss26@gmail.com"], (err, row) => {
-        if (!row) {
-            db.run(
-                `INSERT INTO users (email, password, username, role, subscription) 
-                 VALUES (?, ?, ?, ?, ?)`,
-                ["juliaangelss26@gmail.com", "dark4884", "administrator", "admin", "dev"],
-                function (err) {
-                    if (err) {
-                        console.error("❌ Ошибка при создании админа:", err.message);
-                    } else {
-                        console.log("✅ Админский аккаунт успешно создан");
-                    }
-                }
-            );
-        } else {
-            console.log("ℹ️ Админский аккаунт уже существует");
-        }
-    });
+  // Создаём таблицу покупок
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS purchases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      file_id INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id),
+      FOREIGN KEY (file_id) REFERENCES files(id)
+    )
+  `);
 
-    console.log("✅ Все таблицы проверены/созданы");
-});
+  console.log("📦 Таблицы готовы.");
 
-db.close();
+  // Создание папок для загрузок
+  const uploadDirs = [
+    "uploads/images",
+    "uploads/books",
+    "uploads/games",
+    "uploads/music",
+    "uploads/movies",
+    "uploads/apps",
+    "uploads/tools"
+  ];
+
+  uploadDirs.forEach(dir => {
+    const fullPath = path.resolve(dir);
+    if (!fs.existsSync(fullPath)) {
+      fs.mkdirSync(fullPath, { recursive: true });
+      console.log(`📁 Папка создана: ${dir}`);
+    }
+  });
+
+  // Создание аккаунта администратора, если его нет
+  const adminEmail = "juliaangelss26@gmail.com";
+  const adminPassword = "dark4884"; // 💀 пароль из твоего запроса
+  const adminUsername = "administrator";
+
+  const existingAdmin = await db.get("SELECT * FROM users WHERE email = ?", [adminEmail]);
+
+  if (!existingAdmin) {
+    await db.run(
+      "INSERT INTO users (email, password, username, role) VALUES (?, ?, ?, ?)",
+      [adminEmail, adminPassword, adminUsername, "admin"]
+    );
+    console.log("👑 Администратор создан!");
+  } else {
+    console.log("👑 Администратор уже существует.");
+  }
+
+  console.log("✅ Миграция завершена.");
+})();

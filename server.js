@@ -13,10 +13,19 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
+// Пути
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Папки
+// Автоматически создаём папки
+const dirs = ["uploads", "uploads/profile", "uploads/files"];
+dirs.forEach(dir => {
+    if (!fs.existsSync(path.join(__dirname, dir))) {
+        fs.mkdirSync(path.join(__dirname, dir), { recursive: true });
+    }
+});
+
+// Папки для статики
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 app.use("/images", express.static(path.join(__dirname, "images")));
 app.use("/books", express.static(path.join(__dirname, "books")));
@@ -92,7 +101,7 @@ function authenticateToken(req, res, next) {
     });
 }
 
-// Регистрация / Логин
+// Регистрация
 app.post("/register", (req, res) => {
     const { email, password, username } = req.body;
     if (!email || !password || !username) {
@@ -108,6 +117,7 @@ app.post("/register", (req, res) => {
     );
 });
 
+// Логин
 app.post("/login", (req, res) => {
     const { email, password } = req.body;
     db.get("SELECT * FROM users WHERE email = ?", [email], (err, user) => {
@@ -148,31 +158,19 @@ app.post("/update-profile", authenticateToken, (req, res) => {
 
 // Загрузка фото профиля
 const avatarStorage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, "uploads/profile"),
+    destination: (req, file, cb) => cb(null, path.join(__dirname, "uploads/profile")),
     filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname)
 });
 const uploadAvatar = multer({ storage: avatarStorage });
 
-app.post("/upload-photo", authenticateToken, uploadAvatar.single("avatar"), (req, res) => {
+app.post("/upload-photo", authenticateToken, uploadAvatar.single("profilePhoto"), (req, res) => {
+    if (!req.file) return res.status(400).json({ success: false, error: "Файл не получен" });
+
     const photoPath = "/uploads/profile/" + req.file.filename;
     db.run("UPDATE users SET photo = ? WHERE id = ?", [photoPath, req.user.id], (err) => {
         if (err) return res.status(500).json({ success: false, error: "Ошибка сохранения фото" });
         res.json({ success: true, url: photoPath });
     });
-});
-
-// Загрузка файлов (универсально)
-const fileStorage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, "uploads/files"),
-    filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname)
-});
-const uploadFile = multer({ storage: fileStorage });
-
-app.post("/upload-file", authenticateToken, uploadFile.single("file"), (req, res) => {
-    if (req.user.role !== "admin" && req.user.subscription !== "Разработчик") {
-        return res.status(403).json({ success: false, error: "Нет прав" });
-    }
-    res.json({ success: true, url: "/uploads/files/" + req.file.filename });
 });
 
 // Админка

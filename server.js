@@ -13,8 +13,6 @@ app.use(express.json());
 app.use("/uploads", express.static("uploads"));
 
 const db = new sqlite3.Database("./database.sqlite");
-
-// JWT секрет
 const SECRET_KEY = "your_secret_key";
 
 // === Создание таблиц ===
@@ -42,18 +40,20 @@ db.serialize(() => {
         FOREIGN KEY(ownerId) REFERENCES users(id)
     )`);
 
-    // Создаём админа, если его нет
+    // Создание администратора при первом запуске
     db.get("SELECT * FROM users WHERE email = ?", ["juliaangelss26@gmail.com"], (err, row) => {
         if (!row) {
             bcrypt.hash("dark4884", 10, (err, hash) => {
-                db.run("INSERT INTO users (email, password, username, role, subscription) VALUES (?, ?, ?, 'admin', 'Разработчик')",
-                    ["juliaangelss26@gmail.com", hash, "administrator"]);
+                db.run(
+                    "INSERT INTO users (email, password, username, role, subscription) VALUES (?, ?, ?, 'admin', 'Разработчик')",
+                    ["juliaangelss26@gmail.com", hash, "administrator"]
+                );
             });
         }
     });
 });
 
-// === Middleware для проверки токена ===
+// === Middleware для токена ===
 function authenticateToken(req, res, next) {
     const authHeader = req.headers["authorization"];
     const token = authHeader && authHeader.split(" ")[1];
@@ -66,7 +66,7 @@ function authenticateToken(req, res, next) {
     });
 }
 
-// === Multer настройка для загрузки ===
+// === Настройка multer ===
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
         const section = req.body.section || "misc";
@@ -84,11 +84,12 @@ const upload = multer({ storage });
 app.post("/register", (req, res) => {
     const { email, password, username } = req.body;
     bcrypt.hash(password, 10, (err, hash) => {
-        db.run("INSERT INTO users (email, password, username) VALUES (?, ?, ?)", 
-        [email, hash, username], function (err) {
-            if (err) return res.json({ success: false, error: "Email уже используется" });
-            res.json({ success: true });
-        });
+        db.run("INSERT INTO users (email, password, username) VALUES (?, ?, ?)",
+            [email, hash, username],
+            function (err) {
+                if (err) return res.json({ success: false, error: "Email уже используется" });
+                res.json({ success: true });
+            });
     });
 });
 
@@ -132,17 +133,20 @@ app.post("/profile/photo", authenticateToken, upload.single("photo"), (req, res)
 // === Загрузка файлов ===
 app.post("/upload", authenticateToken, upload.single("file"), (req, res) => {
     const { section, price } = req.body;
+    if (!section) return res.json({ success: false, error: "Не указан раздел" });
+
     db.run("INSERT INTO files (section, filename, originalname, price, ownerId) VALUES (?, ?, ?, ?, ?)",
         [section, req.file.filename, req.file.originalname, price || 0, req.user.id],
         function (err) {
             if (err) return res.json({ success: false, error: "Ошибка загрузки" });
-            res.json({ success: true });
+            res.json({ success: true, fileId: this.lastID });
         });
 });
 
 // === Получение файлов раздела ===
 app.get("/files/:section", (req, res) => {
     db.all("SELECT * FROM files WHERE section = ? AND blocked = 0", [req.params.section], (err, rows) => {
+        if (err) return res.json({ success: false, error: "Ошибка получения списка" });
         res.json({ success: true, files: rows });
     });
 });

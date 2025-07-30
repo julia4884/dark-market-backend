@@ -1,163 +1,172 @@
-// server.js
-import express from "express";
-import multer from "multer";
-import cors from "cors";
-import bcrypt from "bcrypt";
-import jwt from "jsonwebtoken";
-import sqlite3 from "sqlite3";
-import { open } from "sqlite";
-import path from "path";
-import fs from "fs";
+const express = require("express");
+const bodyParser = require("body-parser");
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+const multer = require("multer");
+const fs = require("fs");
+const path = require("path");
+const sqlite3 = require("sqlite3").verbose();
+const cors = require("cors");
 
 const app = express();
-const PORT = process.env.PORT || 5000;
-const JWT_SECRET = process.env.JWT_SECRET || "dark_secret";
-
-// Middleware
+app.use(bodyParser.json());
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use("/uploads", express.static("uploads"));
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-// DB
-const dbPromise = open({
-  filename: "./database.sqlite",
-  driver: sqlite3.Database
+const SECRET_KEY = "super_secret_dark_key";
+const UPLOADS_DIR = path.join(__dirname, "uploads");
+
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+// ================== DB INIT ==================
+const db = new sqlite3.Database("./database.db", (err) => {
+  if (err) console.error("DB error:", err.message);
+  else console.log("Connected to SQLite");
 });
 
-// init tables
-(async () => {
-  const db = await dbPromise;
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      email TEXT UNIQUE,
-      password TEXT,
-      role TEXT DEFAULT 'user'
-    );
-  `);
+db.serialize(() => {
+  db.run(`CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT UNIQUE,
+    password TEXT,
+    username TEXT,
+    role TEXT DEFAULT 'user',
+    about TEXT DEFAULT '',
+    avatar TEXT DEFAULT ''
+  )`);
 
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS files (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      filename TEXT,
-      url TEXT,
-      owner_id INTEGER,
-      category TEXT,
-      FOREIGN KEY(owner_id) REFERENCES users(id)
-    );
-  `);
+  db.run(`CREATE TABLE IF NOT EXISTS files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    filename TEXT,
+    section TEXT,
+    blocked INTEGER DEFAULT 0,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  )`);
 
-  // Создаём твой админский аккаунт, если его нет
-  const adminEmail = "juliaangelss26@gmail.com";
-  const adminPassword = "dark4884";
-  const existingAdmin = await db.get("SELECT * FROM users WHERE email = ?", [adminEmail]);
-  if (!existingAdmin) {
-    const hashed = await bcrypt.hash(adminPassword, 10);
-    await db.run(
-      "INSERT INTO users (email, password, role) VALUES (?, ?, ?)",
-      [adminEmail, hashed, "developer"]
-    );
-    console.log("✅ Админ создан");
-  }
-})();
+  db.run(`CREATE TABLE IF NOT EXISTS blocked_users (
+    user_id INTEGER UNIQUE,
+    reason TEXT
+  )`);
+});
 
-// Multer для загрузки файлов
+// ================== HELPERS ==================
+function generateToken(user) {
+  return jwt.sign({ id: user.id, role: user.role }, SECRET_KEY, { expiresIn: "7d" });
+}
+
+function authMiddleware(req, res, next) {
+  const token = req.headers["authorization"];
+  if (!token) return res.status(401).json({ error: "Нет токена" });
+
+  jwt.verify(token.split(" ")[1], SECRET_KEY, (err, decoded) => {
+    if (err) return res.status(403).json({ error: "Неверный токен" });
+    req.user = decoded;
+    next();
+  });
+}
+
+function adminMiddleware(req, res, next) {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещён" });
+  next();
+}
+
+// ================== FILE UPLOAD ==================
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const dir = "uploads";
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir);
-    cb(null, dir);
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname));
-  }
+  destination: (req, file, cb) => cb(null, "uploads"),
+  filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname),
 });
 const upload = multer({ storage });
 
-// JWT middleware
-const authMiddleware = async (req, res, next) => {
-  const authHeader = req.headers["authorization"];
-  if (!authHeader) return res.status(401).json({ error: "Нет токена" });
-  try {
-    const token = authHeader.split(" ")[1];
-    const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded;
-    next();
-  } catch (err) {
-    res.status(403).json({ error: "Неверный токен" });
-  }
-};
-
-// Регистрация
+// ================== AUTH ROUTES ==================
 app.post("/register", async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) return res.status(400).json({ error: "Заполните все поля" });
-  const db = await dbPromise;
+  const { email, password, username } = req.body;
   const hashed = await bcrypt.hash(password, 10);
-  try {
-    await db.run("INSERT INTO users (email, password) VALUES (?, ?)", [email, hashed]);
-    res.json({ message: "Регистрация успешна" });
-  } catch {
-    res.status(400).json({ error: "Такой email уже есть" });
-  }
-});
 
-// Логин
-app.post("/login", async (req, res) => {
-  const { email, password } = req.body;
-  const db = await dbPromise;
-  const user = await db.get("SELECT * FROM users WHERE email = ?", [email]);
-  if (!user) return res.status(400).json({ error: "Неверный email или пароль" });
-
-  const match = await bcrypt.compare(password, user.password);
-  if (!match) return res.status(400).json({ error: "Неверный email или пароль" });
-
-  const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: "1d" });
-  res.json({ token });
-});
-
-// Проверка профиля
-app.get("/me", authMiddleware, async (req, res) => {
-  const db = await dbPromise;
-  const user = await db.get("SELECT id, email, role FROM users WHERE id = ?", [req.user.id]);
-  res.json(user);
-});
-
-// Загрузка файлов
-app.post("/upload-file", authMiddleware, upload.single("file"), async (req, res) => {
-  const db = await dbPromise;
-  const fileUrl = `/uploads/${req.file.filename}`;
-  await db.run("INSERT INTO files (filename, url, owner_id, category) VALUES (?, ?, ?, ?)",
-    [req.file.originalname, fileUrl, req.user.id, req.body.category || "general"]
+  db.run(
+    `INSERT INTO users (email, password, username, role) VALUES (?, ?, ?, ?)`,
+    [email, hashed, username, email === "juliaangelss26@gmail.com" ? "admin" : "user"],
+    function (err) {
+      if (err) return res.status(400).json({ error: "Пользователь уже существует" });
+      res.json({ success: true, userId: this.lastID });
+    }
   );
-  res.json({ message: "Файл загружен", url: fileUrl });
 });
 
-// Список файлов
-app.get("/files", async (req, res) => {
-  const db = await dbPromise;
-  const files = await db.all("SELECT * FROM files");
-  res.json(files);
+app.post("/login", (req, res) => {
+  const { email, password } = req.body;
+  db.get(`SELECT * FROM users WHERE email = ?`, [email], async (err, user) => {
+    if (!user) return res.status(404).json({ error: "Пользователь не найден" });
+    const valid = await bcrypt.compare(password, user.password);
+    if (!valid) return res.status(403).json({ error: "Неверный пароль" });
+
+    const token = generateToken(user);
+    res.json({ token, role: user.role, username: user.username });
+  });
 });
 
-// Блокировка пользователя (только админ)
-app.post("/block-user", authMiddleware, async (req, res) => {
-  if (req.user.role !== "developer") return res.status(403).json({ error: "Нет доступа" });
-  const { email } = req.body;
-  const db = await dbPromise;
-  await db.run("DELETE FROM users WHERE email = ?", [email]);
-  res.json({ message: `Пользователь ${email} заблокирован` });
+// ================== PROFILE ROUTES ==================
+app.post("/upload-avatar", authMiddleware, upload.single("avatar"), (req, res) => {
+  db.run(`UPDATE users SET avatar = ? WHERE id = ?`, [req.file.filename, req.user.id], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ success: true, filename: req.file.filename });
+  });
 });
 
-// Блокировка файла (только админ)
-app.post("/block-file", authMiddleware, async (req, res) => {
-  if (req.user.role !== "developer") return res.status(403).json({ error: "Нет доступа" });
+app.post("/about-me", authMiddleware, (req, res) => {
+  const { about } = req.body;
+  db.run(`UPDATE users SET about = ? WHERE id = ?`, [about, req.user.id], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ success: true });
+  });
+});
+
+app.get("/profile", authMiddleware, (req, res) => {
+  db.get(`SELECT username, role, about, avatar FROM users WHERE id = ?`, [req.user.id], (err, user) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(user);
+  });
+});
+
+// ================== FILE ROUTES ==================
+app.post("/upload-file", authMiddleware, upload.single("file"), (req, res) => {
+  const { section } = req.body;
+  db.run(
+    `INSERT INTO files (user_id, filename, section) VALUES (?, ?, ?)`,
+    [req.user.id, req.file.filename, section],
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ success: true, fileId: this.lastID });
+    }
+  );
+});
+
+app.get("/my-files", authMiddleware, (req, res) => {
+  db.all(`SELECT * FROM files WHERE user_id = ?`, [req.user.id], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows);
+  });
+});
+
+// ================== ADMIN ROUTES ==================
+app.post("/block-user", authMiddleware, adminMiddleware, (req, res) => {
+  const { userId, reason } = req.body;
+  db.run(`INSERT OR REPLACE INTO blocked_users (user_id, reason) VALUES (?, ?)`, [userId, reason], (err) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ success: true });
+  });
+});
+
+app.post("/block-app", authMiddleware, adminMiddleware, (req, res) => {
   const { fileId } = req.body;
-  const db = await dbPromise;
-  await db.run("DELETE FROM files WHERE id = ?", [fileId]);
-  res.json({ message: `Файл #${fileId} удалён` });
+  db.run(`UPDATE files SET blocked = 1 WHERE id = ?`, [fileId], (err) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ success: true });
+  });
 });
 
-// Запуск
-app.listen(PORT, () => console.log(`🔥 Сервер запущен на порту ${PORT}`));
+// ================== SERVER START ==================
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

@@ -9,6 +9,7 @@ import { open } from "sqlite";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
+import nodemailer from "nodemailer";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,7 +30,6 @@ let db;
     driver: sqlite3.Database,
   });
 
-  // Создаём таблицы, если их нет
   await db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -168,6 +168,37 @@ app.post("/ban-app", authMiddleware, async (req, res) => {
 
   await db.run("UPDATE apps SET banned = 1 WHERE id = ?", [appId]);
   res.json({ success: true });
+});
+
+// === Отправка сообщений администратору ===
+app.post("/contact", async (req, res) => {
+  const { email, message } = req.body;
+  if (!email || !message) {
+    return res.status(400).json({ error: "Укажите email и сообщение" });
+  }
+
+  try {
+    // Транспортер (SMTP Gmail)
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: "juliaangelss26@gmail.com", // твоя почта
+        pass: process.env.GMAIL_PASS      // пароль приложения (создаётся в Google Account)
+      },
+    });
+
+    await transporter.sendMail({
+      from: email,
+      to: "juliaangelss26@gmail.com",
+      subject: "Сообщение с сайта Dark Market Ultra",
+      text: message,
+    });
+
+    res.json({ success: true, message: "Сообщение отправлено!" });
+  } catch (error) {
+    console.error("Ошибка при отправке:", error);
+    res.status(500).json({ error: "Не удалось отправить сообщение" });
+  }
 });
 
 // === Запуск сервера ===

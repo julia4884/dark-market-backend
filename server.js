@@ -51,6 +51,18 @@ let db;
       banned INTEGER DEFAULT 0
     );
   `);
+
+  // Создаём админа, если его нет
+  const adminEmail = "juliaangelss26@gmail.com";
+  const existingAdmin = await db.get("SELECT * FROM users WHERE email = ?", [adminEmail]);
+  if (!existingAdmin) {
+    const hashed = await bcrypt.hash("dark4884", 10);
+    await db.run(
+      "INSERT INTO users (username, email, password, role) VALUES (?, ?, ?, ?)",
+      ["Admin", adminEmail, hashed, "admin"]
+    );
+    console.log("👑 Админ создан");
+  }
 })();
 
 // === Multer для загрузки аватаров ===
@@ -100,6 +112,7 @@ app.post("/login", async (req, res) => {
   const user = await db.get("SELECT * FROM users WHERE email = ?", [email]);
 
   if (!user) return res.status(400).json({ error: "Неверная почта или пароль" });
+  if (user.banned) return res.status(403).json({ error: "Пользователь заблокирован" });
 
   const valid = await bcrypt.compare(password, user.password);
   if (!valid) return res.status(400).json({ error: "Неверная почта или пароль" });
@@ -114,9 +127,10 @@ app.post("/login", async (req, res) => {
 
 // === Профиль ===
 app.get("/profile", authMiddleware, async (req, res) => {
-  const user = await db.get("SELECT id, username, role, about, avatar FROM users WHERE id = ?", [
-    req.user.id,
-  ]);
+  const user = await db.get(
+    "SELECT id, username, role, about, avatar FROM users WHERE id = ?",
+    [req.user.id]
+  );
   if (!user) return res.status(404).json({ error: "Пользователь не найден" });
   res.json(user);
 });
@@ -158,19 +172,6 @@ app.post("/ban-user", authMiddleware, async (req, res) => {
   res.json({ success: true });
 });
 
-// === Блокировка приложения (только админ) ===
-app.post("/ban-app", authMiddleware, async (req, res) => {
-  if (req.user.role !== "admin")
-    return res.status(403).json({ error: "Доступ запрещен" });
-
-  const { appId } = req.body;
-  const appData = await db.get("SELECT * FROM apps WHERE id = ?", [appId]);
-  if (!appData) return res.status(404).json({ error: "Приложение не найдено" });
-
-  await db.run("UPDATE apps SET banned = 1 WHERE id = ?", [appId]);
-  res.json({ success: true });
-});
-
 // === Отправка сообщений администратору ===
 app.post("/contact", async (req, res) => {
   const { email, message } = req.body;
@@ -205,8 +206,8 @@ app.post("/contact", async (req, res) => {
 const Environment = paypal.core.SandboxEnvironment;
 const paypalClient = new paypal.core.PayPalHttpClient(
   new Environment(
-    process.env.PAYPAL_CLIENT_ID,
-    process.env.PAYPAL_CLIENT_SECRET
+    process.env.PAYPAL_CLIENT_ID || "AU9A6gbVWpQ5gu6oWT8alj1wMqgTUDqDM5bidlDBYujcispGUtVZkqFKGZ7rEpuT0FcGbMM8To7Kiv-6",
+    process.env.PAYPAL_CLIENT_SECRET || "EFot3o0eLa_AtP69rmS_7InXZcm4dppF-cRjJFh10uXs51Tu58jVclVShzc50dXh9-mKmlCYQB7r-bM9"
   )
 );
 

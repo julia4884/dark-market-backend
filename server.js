@@ -1,185 +1,174 @@
 import express from "express";
 import bodyParser from "body-parser";
 import cors from "cors";
+import jwt from "jsonwebtoken";
+import bcrypt from "bcrypt";
+import multer from "multer";
 import sqlite3 from "sqlite3";
 import { open } from "sqlite";
-import bcrypt from "bcrypt";
-import jwt from "jsonwebtoken";
-import multer from "multer";
-import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import dotenv from "dotenv";
+import fs from "fs";
 
-dotenv.config();
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey";
-
-// Настройки путей
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const app = express();
+const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || "dark_secret";
 
-// Middleware
+// === Middlewares ===
 app.use(cors());
 app.use(bodyParser.json());
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-// Настройка Multer (загрузка файлов)
-const storage = multer.diskStorage({
+// === Database ===
+let db;
+(async () => {
+  db = await open({
+    filename: "./database.sqlite",
+    driver: sqlite3.Database,
+  });
+
+  // Создаём таблицы, если их нет
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE,
+      email TEXT UNIQUE,
+      password TEXT,
+      role TEXT DEFAULT 'user',
+      about TEXT,
+      banned INTEGER DEFAULT 0,
+      avatar TEXT DEFAULT 'uploads/avatars/default.png'
+    );
+
+    CREATE TABLE IF NOT EXISTS apps (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT,
+      description TEXT,
+      price REAL DEFAULT 0,
+      banned INTEGER DEFAULT 0
+    );
+  `);
+})();
+
+// === Multer для загрузки аватаров ===
+const avatarStorage = multer.diskStorage({
   destination: (req, file, cb) => {
-    let folder = "uploads/files";
-    if (file.fieldname === "avatar") folder = "uploads/avatars";
-    cb(null, path.join(__dirname, folder));
+    const dir = path.join(__dirname, "uploads", "avatars");
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
   },
   filename: (req, file, cb) => {
     cb(null, Date.now() + "-" + file.originalname);
   },
 });
-const upload = multer({ storage });
+const uploadAvatar = multer({ storage: avatarStorage });
 
-// Подключение БД
-let db;
-(async () => {
-  db = await open({
-    filename: "database.db",
-    driver: sqlite3.Database,
+// === Middleware для проверки токена ===
+function authMiddleware(req, res, next) {
+  const authHeader = req.headers["authorization"];
+  if (!authHeader) return res.status(401).json({ error: "Нет токена" });
+
+  const token = authHeader.split(" ")[1];
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: "Неверный токен" });
+    req.user = user;
+    next();
   });
-  console.log("База данных подключена!");
-})();
+}
 
-// Регистрация
+// === Регистрация ===
 app.post("/register", async (req, res) => {
+  const { username, email, password } = req.body;
   try {
-    const { email, password, username } = req.body;
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    const existingUser = await db.get("SELECT * FROM users WHERE email = ?", [email]);
-    if (existingUser) {
-      return res.status(400).json({ error: "Email уже зарегистрирован" });
-    }
-
+    const hashed = await bcrypt.hash(password, 10);
     await db.run(
-      "INSERT INTO users (email, password, username, role) VALUES (?, ?, ?, ?)",
-      [email, hashedPassword, username, "user"]
+      "INSERT INTO users (username, email, password) VALUES (?, ?, ?)",
+      [username, email, hashed]
     );
-
-    res.json({ success: true, message: "Регистрация успешна!" });
-  } catch (err) {
-    console.error("Ошибка регистрации:", err);
-    res.status(500).json({ error: "Ошибка сервера" });
+    res.json({ success: true });
+  } catch {
+    res.status(400).json({ error: "Пользователь уже существует" });
   }
 });
 
-// Логин
+// === Логин ===
 app.post("/login", async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    const user = await db.get("SELECT * FROM users WHERE email = ?", [email]);
+  const { email, password } = req.body;
+  const user = await db.get("SELECT * FROM users WHERE email = ?", [email]);
 
-    if (!user) return res.status(400).json({ error: "Неверный email или пароль" });
+  if (!user) return res.status(400).json({ error: "Неверная почта или пароль" });
 
-    const valid = await bcrypt.compare(password, user.password);
-    if (!valid) return res.status(400).json({ error: "Неверный email или пароль" });
+  const valid = await bcrypt.compare(password, user.password);
+  if (!valid) return res.status(400).json({ error: "Неверная почта или пароль" });
 
-    const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: "1h" });
-
-    res.json({ success: true, token, role: user.role, username: user.username, id: user.id });
-  } catch (err) {
-    console.error("Ошибка входа:", err);
-    res.status(500).json({ error: "Ошибка сервера" });
-  }
+  const token = jwt.sign(
+    { id: user.id, username: user.username, role: user.role },
+    JWT_SECRET,
+    { expiresIn: "2h" }
+  );
+  res.json({ token, role: user.role });
 });
 
-// Получение профиля
-app.get("/profile", async (req, res) => {
-  try {
-    const authHeader = req.headers["authorization"];
-    if (!authHeader) return res.status(401).json({ error: "Нет токена" });
-
-    const token = authHeader.split(" ")[1];
-    const decoded = jwt.verify(token, JWT_SECRET);
-
-    const user = await db.get("SELECT id, email, username, role, avatar FROM users WHERE id = ?", [
-      decoded.id,
-    ]);
-
-    res.json(user);
-  } catch (err) {
-    console.error("Ошибка профиля:", err);
-    res.status(401).json({ error: "Неверный токен" });
-  }
+// === Профиль ===
+app.get("/profile", authMiddleware, async (req, res) => {
+  const user = await db.get("SELECT id, username, role, about, avatar FROM users WHERE id = ?", [
+    req.user.id,
+  ]);
+  if (!user) return res.status(404).json({ error: "Пользователь не найден" });
+  res.json(user);
 });
 
-// Загрузка аватара
-app.post("/upload-avatar", upload.single("avatar"), async (req, res) => {
-  try {
-    const authHeader = req.headers["authorization"];
-    if (!authHeader) return res.status(401).json({ error: "Нет токена" });
-
-    const token = authHeader.split(" ")[1];
-    const decoded = jwt.verify(token, JWT_SECRET);
-
-    const avatarPath = "uploads/avatars/" + req.file.filename;
-    await db.run("UPDATE users SET avatar = ? WHERE id = ?", [avatarPath, decoded.id]);
-
-    res.json({ success: true, avatar: avatarPath });
-  } catch (err) {
-    console.error("Ошибка загрузки аватара:", err);
-    res.status(500).json({ error: "Ошибка сервера" });
-  }
+// === Обновление "О себе" ===
+app.post("/update-about", authMiddleware, async (req, res) => {
+  const { about } = req.body;
+  await db.run("UPDATE users SET about = ? WHERE id = ?", [about, req.user.id]);
+  res.json({ success: true, about });
 });
 
-// Получение аватара (с пустой заглушкой)
+// === Загрузка аватара ===
+app.post("/upload-avatar", authMiddleware, uploadAvatar.single("avatar"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "Файл не получен" });
+
+  const filePath = `uploads/avatars/${req.file.filename}`;
+  await db.run("UPDATE users SET avatar = ? WHERE id = ?", [filePath, req.user.id]);
+
+  res.json({ success: true, avatar: filePath });
+});
+
+// === Получение аватара ===
 app.get("/user-avatar/:id", async (req, res) => {
-  try {
-    const userId = req.params.id;
-    const user = await db.get("SELECT avatar FROM users WHERE id = ?", [userId]);
-
-    if (user && user.avatar) {
-      const avatarPath = path.join(__dirname, user.avatar);
-      if (fs.existsSync(avatarPath)) {
-        return res.sendFile(avatarPath);
-      }
-    }
-
-    // Отдаём прозрачный PNG-заглушку
-    const blankImage = Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEklEQVR42mP8/5+hHgAHggJ/lA5fXwAAAABJRU5ErkJggg==",
-      "base64"
-    );
-    res.writeHead(200, {
-      "Content-Type": "image/png",
-      "Content-Length": blankImage.length,
-    });
-    return res.end(blankImage);
-  } catch (err) {
-    console.error("Ошибка при загрузке аватара:", err);
-    res.status(500).json({ error: "Ошибка сервера при загрузке аватара" });
-  }
+  const user = await db.get("SELECT avatar FROM users WHERE id = ?", [req.params.id]);
+  if (!user) return res.status(404).send("Нет аватара");
+  res.sendFile(path.join(__dirname, user.avatar));
 });
 
-// Загрузка файлов (только для разработчиков и админов)
-app.post("/upload/:category", upload.single("file"), async (req, res) => {
-  try {
-    const authHeader = req.headers["authorization"];
-    if (!authHeader) return res.status(401).json({ error: "Нет токена" });
+// === Блокировка пользователя (только админ) ===
+app.post("/ban-user", authMiddleware, async (req, res) => {
+  if (req.user.role !== "admin")
+    return res.status(403).json({ error: "Доступ запрещен" });
 
-    const token = authHeader.split(" ")[1];
-    const decoded = jwt.verify(token, JWT_SECRET);
+  const { username } = req.body;
+  const user = await db.get("SELECT * FROM users WHERE username = ?", [username]);
+  if (!user) return res.status(404).json({ error: "Пользователь не найден" });
 
-    if (decoded.role !== "developer" && decoded.role !== "admin") {
-      return res.status(403).json({ error: "Нет прав на загрузку" });
-    }
-
-    const filePath = `uploads/${req.params.category}/${req.file.filename}`;
-    res.json({ success: true, path: filePath });
-  } catch (err) {
-    console.error("Ошибка загрузки файла:", err);
-    res.status(500).json({ error: "Ошибка сервера" });
-  }
+  await db.run("UPDATE users SET banned = 1 WHERE username = ?", [username]);
+  res.json({ success: true });
 });
 
-// Запуск сервера
-app.listen(PORT, () => console.log(`Сервер запущен на порту ${PORT}`));
+// === Блокировка приложения (только админ) ===
+app.post("/ban-app", authMiddleware, async (req, res) => {
+  if (req.user.role !== "admin")
+    return res.status(403).json({ error: "Доступ запрещен" });
+
+  const { appId } = req.body;
+  const appData = await db.get("SELECT * FROM apps WHERE id = ?", [appId]);
+  if (!appData) return res.status(404).json({ error: "Приложение не найдено" });
+
+  await db.run("UPDATE apps SET banned = 1 WHERE id = ?", [appId]);
+  res.json({ success: true });
+});
+
+// === Запуск сервера ===
+app.listen(PORT, () => console.log(`🚀 Сервер запущен на порту ${PORT}`));

@@ -1,180 +1,185 @@
 import express from "express";
 import bodyParser from "body-parser";
-import bcrypt from "bcrypt";
-import jwt from "jsonwebtoken";
+import cors from "cors";
 import sqlite3 from "sqlite3";
 import { open } from "sqlite";
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
 import multer from "multer";
-import cors from "cors";
-import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
+import dotenv from "dotenv";
 
 dotenv.config();
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey";
 
-app.use(bodyParser.json());
-app.use(cors());
-app.use("/uploads", express.static("uploads"));
+// Настройки путей
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-// === SQLite подключение ===
+// Middleware
+app.use(cors());
+app.use(bodyParser.json());
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+// Настройка Multer (загрузка файлов)
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    let folder = "uploads/files";
+    if (file.fieldname === "avatar") folder = "uploads/avatars";
+    cb(null, path.join(__dirname, folder));
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + "-" + file.originalname);
+  },
+});
+const upload = multer({ storage });
+
+// Подключение БД
 let db;
 (async () => {
   db = await open({
-    filename: "./database.sqlite",
+    filename: "database.db",
     driver: sqlite3.Database,
   });
-
-  // создаем таблицы, если нет
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT,
-      email TEXT UNIQUE,
-      password TEXT,
-      role TEXT DEFAULT 'user',
-      avatar TEXT DEFAULT ''
-    );
-  `);
-
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS files (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER,
-      filename TEXT,
-      section TEXT,
-      price REAL DEFAULT 0,
-      FOREIGN KEY (user_id) REFERENCES users (id)
-    );
-  `);
+  console.log("База данных подключена!");
 })();
 
-// === Middleware ===
-function authMiddleware(req, res, next) {
-  const authHeader = req.headers["authorization"];
-  if (!authHeader) return res.status(401).json({ error: "Нет токена" });
-
-  const token = authHeader.split(" ")[1];
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) return res.status(403).json({ error: "Неверный токен" });
-    req.user = user;
-    next();
-  });
-}
-
-function developerMiddleware(req, res, next) {
-  if (req.user.role === "developer" || req.user.role === "admin") {
-    return next();
-  }
-  return res.status(403).json({ error: "Доступ только для разработчиков" });
-}
-
-// === Настройка multer ===
-const storageFiles = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, "uploads/"),
-  filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname),
-});
-
-const storageAvatars = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const dir = "uploads/avatars";
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    cb(null, dir);
-  },
-  filename: (req, file, cb) =>
-    cb(null, Date.now() + "-" + file.originalname),
-});
-
-const uploadFile = multer({ storage: storageFiles });
-const uploadAvatar = multer({ storage: storageAvatars });
-
-// === Регистрация ===
+// Регистрация
 app.post("/register", async (req, res) => {
   try {
-    const { username, email, password } = req.body;
+    const { email, password, username } = req.body;
     const hashedPassword = await bcrypt.hash(password, 10);
+
+    const existingUser = await db.get("SELECT * FROM users WHERE email = ?", [email]);
+    if (existingUser) {
+      return res.status(400).json({ error: "Email уже зарегистрирован" });
+    }
+
     await db.run(
-      "INSERT INTO users (username, email, password) VALUES (?, ?, ?)",
-      [username, email, hashedPassword]
+      "INSERT INTO users (email, password, username, role) VALUES (?, ?, ?, ?)",
+      [email, hashedPassword, username, "user"]
     );
-    res.json({ success: true, message: "Регистрация успешна" });
+
+    res.json({ success: true, message: "Регистрация успешна!" });
   } catch (err) {
-    res.status(400).json({ error: "Ошибка регистрации: " + err.message });
+    console.error("Ошибка регистрации:", err);
+    res.status(500).json({ error: "Ошибка сервера" });
   }
 });
 
-// === Вход ===
+// Логин
 app.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
     const user = await db.get("SELECT * FROM users WHERE email = ?", [email]);
 
-    if (!user) return res.status(400).json({ error: "Пользователь не найден" });
-    const validPassword = await bcrypt.compare(password, user.password);
-    if (!validPassword) return res.status(400).json({ error: "Неверный пароль" });
+    if (!user) return res.status(400).json({ error: "Неверный email или пароль" });
 
-    const token = jwt.sign(
-      { id: user.id, role: user.role, username: user.username, avatar: user.avatar },
-      JWT_SECRET,
-      { expiresIn: "2h" }
-    );
+    const valid = await bcrypt.compare(password, user.password);
+    if (!valid) return res.status(400).json({ error: "Неверный email или пароль" });
 
-    res.json({ success: true, token, role: user.role, username: user.username, avatar: user.avatar });
+    const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: "1h" });
+
+    res.json({ success: true, token, role: user.role, username: user.username, id: user.id });
   } catch (err) {
+    console.error("Ошибка входа:", err);
     res.status(500).json({ error: "Ошибка сервера" });
   }
 });
 
-// === Загрузка файла (только для разработчиков) ===
-app.post("/upload-file", authMiddleware, developerMiddleware, uploadFile.single("file"), async (req, res) => {
+// Получение профиля
+app.get("/profile", async (req, res) => {
   try {
-    const { section, price } = req.body;
-    await db.run(
-      "INSERT INTO files (user_id, filename, section, price) VALUES (?, ?, ?, ?)",
-      [req.user.id, req.file.filename, section, price || 0]
-    );
-    res.json({ success: true, message: "Файл загружен" });
+    const authHeader = req.headers["authorization"];
+    if (!authHeader) return res.status(401).json({ error: "Нет токена" });
+
+    const token = authHeader.split(" ")[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    const user = await db.get("SELECT id, email, username, role, avatar FROM users WHERE id = ?", [
+      decoded.id,
+    ]);
+
+    res.json(user);
   } catch (err) {
-    res.status(500).json({ error: "Ошибка при загрузке файла: " + err.message });
+    console.error("Ошибка профиля:", err);
+    res.status(401).json({ error: "Неверный токен" });
   }
 });
 
-// === Загрузка аватара ===
-app.post("/upload-avatar", authMiddleware, uploadAvatar.single("avatar"), async (req, res) => {
+// Загрузка аватара
+app.post("/upload-avatar", upload.single("avatar"), async (req, res) => {
   try {
-    const avatarPath = `/uploads/avatars/${req.file.filename}`;
-    await db.run("UPDATE users SET avatar = ? WHERE id = ?", [avatarPath, req.user.id]);
+    const authHeader = req.headers["authorization"];
+    if (!authHeader) return res.status(401).json({ error: "Нет токена" });
+
+    const token = authHeader.split(" ")[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    const avatarPath = "uploads/avatars/" + req.file.filename;
+    await db.run("UPDATE users SET avatar = ? WHERE id = ?", [avatarPath, decoded.id]);
+
     res.json({ success: true, avatar: avatarPath });
   } catch (err) {
-    res.status(500).json({ error: "Ошибка загрузки аватара: " + err.message });
+    console.error("Ошибка загрузки аватара:", err);
+    res.status(500).json({ error: "Ошибка сервера" });
   }
 });
 
-// === Получение аватара ===
+// Получение аватара (с пустой заглушкой)
 app.get("/user-avatar/:id", async (req, res) => {
   try {
-    const user = await db.get("SELECT avatar FROM users WHERE id = ?", [req.params.id]);
-    if (!user || !user.avatar) {
-      return res.json({ avatar: "/uploads/avatars/default.png" }); // дефолтный аватар
+    const userId = req.params.id;
+    const user = await db.get("SELECT avatar FROM users WHERE id = ?", [userId]);
+
+    if (user && user.avatar) {
+      const avatarPath = path.join(__dirname, user.avatar);
+      if (fs.existsSync(avatarPath)) {
+        return res.sendFile(avatarPath);
+      }
     }
-    res.json({ avatar: user.avatar });
+
+    // Отдаём прозрачный PNG-заглушку
+    const blankImage = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEklEQVR42mP8/5+hHgAHggJ/lA5fXwAAAABJRU5ErkJggg==",
+      "base64"
+    );
+    res.writeHead(200, {
+      "Content-Type": "image/png",
+      "Content-Length": blankImage.length,
+    });
+    return res.end(blankImage);
   } catch (err) {
-    res.status(500).json({ error: "Ошибка получения аватара" });
+    console.error("Ошибка при загрузке аватара:", err);
+    res.status(500).json({ error: "Ошибка сервера при загрузке аватара" });
   }
 });
 
-// === Список файлов по разделу ===
-app.get("/files/:section", async (req, res) => {
+// Загрузка файлов (только для разработчиков и админов)
+app.post("/upload/:category", upload.single("file"), async (req, res) => {
   try {
-    const files = await db.all("SELECT * FROM files WHERE section = ?", [req.params.section]);
-    res.json(files);
+    const authHeader = req.headers["authorization"];
+    if (!authHeader) return res.status(401).json({ error: "Нет токена" });
+
+    const token = authHeader.split(" ")[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    if (decoded.role !== "developer" && decoded.role !== "admin") {
+      return res.status(403).json({ error: "Нет прав на загрузку" });
+    }
+
+    const filePath = `uploads/${req.params.category}/${req.file.filename}`;
+    res.json({ success: true, path: filePath });
   } catch (err) {
-    res.status(500).json({ error: "Ошибка получения файлов" });
+    console.error("Ошибка загрузки файла:", err);
+    res.status(500).json({ error: "Ошибка сервера" });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Сервер запущен на http://localhost:${PORT}`);
-});
+// Запуск сервера
+app.listen(PORT, () => console.log(`Сервер запущен на порту ${PORT}`));

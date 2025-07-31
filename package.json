@@ -18,7 +18,9 @@
     "jsonwebtoken": "^9.0.0",
     "multer": "^1.4.5-lts.1",
     "sqlite": "^4.2.1",
-    "sqlite3": "^5.1.6"
+    "sqlite3": "^5.1.6",
+    "nodemailer": "^6.9.5",
+    "@paypal/checkout-server-sdk": "^1.0.3"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

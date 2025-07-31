@@ -1,5 +1,6 @@
 import sqlite3 from "sqlite3";
 import { open } from "sqlite";
+import bcrypt from "bcrypt";
 
 const migrate = async () => {
   const db = await open({
@@ -15,23 +16,10 @@ const migrate = async () => {
       email TEXT UNIQUE NOT NULL,
       password TEXT NOT NULL,
       role TEXT DEFAULT 'user', -- user / developer / admin
+      avatar TEXT DEFAULT '',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
   `);
-
-  // Проверяем, есть ли колонка avatar
-  const avatarColumn = await db.get(`
-    PRAGMA table_info(users);
-  `);
-
-  const hasAvatar = avatarColumn && Array.isArray(avatarColumn)
-    ? avatarColumn.some(col => col.name === "avatar")
-    : false;
-
-  if (!hasAvatar) {
-    await db.exec(`ALTER TABLE users ADD COLUMN avatar TEXT DEFAULT '';`);
-    console.log("✅ Колонка 'avatar' добавлена в таблицу users.");
-  }
 
   // Создание таблицы файлов
   await db.exec(`
@@ -45,6 +33,22 @@ const migrate = async () => {
       FOREIGN KEY (user_id) REFERENCES users(id)
     );
   `);
+
+  // Проверяем, есть ли админ
+  const adminEmail = "juliaangelss26@gmail.com";
+  const adminPassword = "dark4884";
+  const existingAdmin = await db.get("SELECT * FROM users WHERE email = ?", [adminEmail]);
+
+  if (!existingAdmin) {
+    const hashed = await bcrypt.hash(adminPassword, 10);
+    await db.run(
+      "INSERT INTO users (username, email, password, role, avatar) VALUES (?, ?, ?, ?, ?)",
+      ["SuperAdmin", adminEmail, hashed, "admin", "uploads/avatars/default.png"]
+    );
+    console.log("✅ Админ создан: email = juliaangelss26@gmail.com, пароль = dark4884");
+  } else {
+    console.log("ℹ️ Админ уже существует, пропускаем создание.");
+  }
 
   console.log("✅ Migration completed successfully");
   await db.close();

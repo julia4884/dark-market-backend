@@ -183,7 +183,7 @@ app.post("/contact", async (req, res) => {
       service: "gmail",
       auth: {
         user: "juliaangelss26@gmail.com",
-        pass: process.env.GMAIL_PASS
+        pass: process.env.GMAIL_PASS,
       },
     });
 
@@ -205,8 +205,8 @@ app.post("/contact", async (req, res) => {
 const Environment = paypal.core.SandboxEnvironment;
 const paypalClient = new paypal.core.PayPalHttpClient(
   new Environment(
-    process.env.PAYPAL_CLIENT_ID || "AU9A6gbVWpQ5gu6oWT8alj1wMqgTUDqDM5bidlDBYujcispGUtVZkqFKGZ7rEpuT0FcGbMM8To7Kiv-6",
-    process.env.PAYPAL_CLIENT_SECRET || "EFot3o0eLa_AtP69rmS_7InXZcm4dppF-cRjJFh10uXs51Tu58jVclVShzc50dXh9-mKmlCYQB7r-bM9"
+    process.env.PAYPAL_CLIENT_ID,
+    process.env.PAYPAL_CLIENT_SECRET
   )
 );
 

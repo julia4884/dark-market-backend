@@ -10,6 +10,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
 import nodemailer from "nodemailer";
+import paypal from "@paypal/checkout-server-sdk";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -178,12 +179,11 @@ app.post("/contact", async (req, res) => {
   }
 
   try {
-    // Транспортер (SMTP Gmail)
     const transporter = nodemailer.createTransport({
       service: "gmail",
       auth: {
-        user: "juliaangelss26@gmail.com", // твоя почта
-        pass: process.env.GMAIL_PASS      // пароль приложения (создаётся в Google Account)
+        user: "juliaangelss26@gmail.com",
+        pass: process.env.GMAIL_PASS
       },
     });
 
@@ -198,6 +198,46 @@ app.post("/contact", async (req, res) => {
   } catch (error) {
     console.error("Ошибка при отправке:", error);
     res.status(500).json({ error: "Не удалось отправить сообщение" });
+  }
+});
+
+// === PayPal Integration ===
+const Environment = paypal.core.SandboxEnvironment;
+const paypalClient = new paypal.core.PayPalHttpClient(
+  new Environment(
+    process.env.PAYPAL_CLIENT_ID || "AU9A6gbVWpQ5gu6oWT8alj1wMqgTUDqDM5bidlDBYujcispGUtVZkqFKGZ7rEpuT0FcGbMM8To7Kiv-6",
+    process.env.PAYPAL_CLIENT_SECRET || "EFot3o0eLa_AtP69rmS_7InXZcm4dppF-cRjJFh10uXs51Tu58jVclVShzc50dXh9-mKmlCYQB7r-bM9"
+  )
+);
+
+app.post("/create-order", async (req, res) => {
+  const { amount } = req.body;
+  const request = new paypal.orders.OrdersCreateRequest();
+  request.prefer("return=representation");
+  request.requestBody({
+    intent: "CAPTURE",
+    purchase_units: [{ amount: { currency_code: "USD", value: amount } }],
+  });
+
+  try {
+    const order = await paypalClient.execute(request);
+    res.json(order.result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Ошибка при создании заказа" });
+  }
+});
+
+app.post("/capture-order", async (req, res) => {
+  const { orderID } = req.body;
+  const request = new paypal.orders.OrdersCaptureRequest(orderID);
+  request.requestBody({});
+  try {
+    const capture = await paypalClient.execute(request);
+    res.json(capture.result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Ошибка при подтверждении платежа" });
   }
 });
 

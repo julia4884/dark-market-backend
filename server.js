@@ -173,11 +173,16 @@ app.post("/login", async (req, res) => {
 
 // === Профиль ===
 app.get("/profile", authMiddleware, async (req, res) => {
-  const user = await db.get(
+  let user = await db.get(
     "SELECT id, username, role, about, avatar FROM users WHERE id = ?",
     [req.user.id]
   );
   if (!user) return res.status(404).json({ error: "Пользователь не найден" });
+
+  if (!fs.existsSync(path.join(__dirname, user.avatar))) {
+    user.avatar = "uploads/avatars/default.png";
+  }
+
   res.json(user);
 });
 
@@ -223,6 +228,13 @@ app.get("/download/:folder/:filename", authMiddleware, (req, res) => {
   res.download(filePath);
 });
 
+// === Админка: список файлов ===
+app.get("/admin/files", authMiddleware, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
+  const files = await db.all("SELECT * FROM files ORDER BY createdAt DESC");
+  res.json(files);
+});
+
 // === Админка: управление сообщениями ===
 app.get("/admin/messages", authMiddleware, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
@@ -234,6 +246,21 @@ app.post("/admin/messages", authMiddleware, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
   const { type, content } = req.body;
   await db.run("INSERT INTO messages (type, content) VALUES (?, ?)", [type, content]);
+  res.json({ success: true });
+});
+
+app.put("/admin/messages/:id", authMiddleware, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
+  const { id } = req.params;
+  const { content } = req.body;
+  await db.run("UPDATE messages SET content = ? WHERE id = ?", [content, id]);
+  res.json({ success: true });
+});
+
+app.delete("/admin/messages/:id", authMiddleware, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
+  const { id } = req.params;
+  await db.run("DELETE FROM messages WHERE id = ?", [id]);
   res.json({ success: true });
 });
 
@@ -273,11 +300,22 @@ app.post("/create-order", async (req, res) => {
 });
 
 app.post("/capture-order", async (req, res) => {
-  const { orderID } = req.body;
+  const { orderID, days, userId } = req.body;
   const request = new paypal.orders.OrdersCaptureRequest(orderID);
   request.requestBody({});
   try {
     const capture = await paypalClient.execute(request);
+
+    if (capture.result.status === "COMPLETED") {
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + (days || 30));
+
+      await db.run(
+        "INSERT INTO vip (userId, expiresAt) VALUES (?, ?)",
+        [userId, expiresAt.toISOString()]
+      );
+    }
+
     res.json(capture.result);
   } catch (err) {
     console.error(err);
@@ -285,20 +323,7 @@ app.post("/capture-order", async (req, res) => {
   }
 });
 
-// === VIP активация ===
-app.post("/activate-vip", authMiddleware, async (req, res) => {
-  const { days } = req.body;
-  const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + days);
-
-  await db.run(
-    "INSERT INTO vip (userId, expiresAt) VALUES (?, ?)",
-    [req.user.id, expiresAt.toISOString()]
-  );
-  res.json({ success: true, vip: true, expiresAt });
-});
-
-// === Проверка VIP ===
+// === VIP проверка ===
 app.get("/check-vip", authMiddleware, async (req, res) => {
   const vip = await db.get("SELECT * FROM vip WHERE userId = ? AND active = 1", [req.user.id]);
   if (!vip) return res.json({ vip: false });

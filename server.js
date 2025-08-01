@@ -692,6 +692,10 @@ app.get("/check-vip", authMiddleware, async (req, res) => {
   }
   res.json({ vip: true, expiresAt: vip.expiresAt, amount: vip.amount });
 });
-
+// Обработчик ошибок
+app.use((err, req, res, next) => {
+  console.error("Ошибка сервера:", err.stack);
+  res.status(500).json({ error: "Внутренняя ошибка сервера" });
+});
 // === Запуск сервера ===
 app.listen(PORT, () => console.log(`🚀 Сервер запущен на порту ${PORT}`));

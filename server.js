@@ -163,6 +163,7 @@ const fileStorage = multer.diskStorage({
   },
   filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname),
 });
+const uploadFile = multer({ storage: fileStorage });
 // === Загрузка файлов ===
 app.post("/upload-file", authMiddleware, uploadFile.single("file"), async (req, res) => {
   try {
@@ -186,7 +187,6 @@ app.post("/upload-file", authMiddleware, uploadFile.single("file"), async (req, 
     res.status(500).json({ error: "Не удалось загрузить файл" });
   }
 });
-const uploadFile = multer({ storage: fileStorage });
 
 // === Регистрация ===
 app.post("/register", async (req, res) => {

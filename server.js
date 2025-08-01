@@ -10,6 +10,11 @@ import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
 import paypal from "@paypal/checkout-server-sdk";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,6 +26,21 @@ const JWT_SECRET = process.env.JWT_SECRET || "dark_secret";
 app.use(cors());
 app.use(bodyParser.json());
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+// Защита заголовков
+app.use(helmet());
+
+// Ограничение количества запросов
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 минут
+  max: 100, // макс. 100 запросов с одного IP
+});
+app.use(limiter);
+
+// Жёсткий CORS (разрешаем только свой фронтенд)
+app.use(cors({
+  origin: process.env.FRONTEND_URL || "http://localhost:5173",
+  credentials: true,
+}));
 
 // === Database ===
 let db;
@@ -151,7 +171,10 @@ const avatarStorage = multer.diskStorage({
   },
   filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname),
 });
-const uploadAvatar = multer({ storage: avatarStorage });
+const uploadAvatar = multer({ 
+  storage: avatarStorage,
+  limits: { fileSize: 2 * 1024 * 1024 } // 2MB лимит
+});
 
 // === Multer для загрузки файлов ===
 const fileStorage = multer.diskStorage({
@@ -163,7 +186,52 @@ const fileStorage = multer.diskStorage({
   },
   filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname),
 });
-const uploadFile = multer({ storage: fileStorage });
+import busboy from "busboy"; // добавь импорт наверху
+
+// === Загрузка больших файлов (стриминг) ===
+app.post("/upload-file", authMiddleware, (req, res) => {
+  const bb = busboy({ headers: req.headers, limits: { fileSize: 10 * 1024 * 1024 * 1024 } }); // до 10 GB
+
+  let saveTo;
+  let originalName = "";
+  let filePath = "";
+  let category = "general";
+  let price = 0;
+
+  bb.on("file", (name, file, info) => {
+    originalName = info.filename;
+    const type = req.query.type || "files";
+    const uploadDir = path.join(__dirname, "uploads", type);
+
+    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+
+    const filename = Date.now() + "-" + originalName;
+    filePath = path.join("uploads", type, filename);
+    saveTo = path.join(uploadDir, filename);
+
+    file.pipe(fs.createWriteStream(saveTo));
+  });
+
+  bb.on("field", (name, val) => {
+    if (name === "category") category = val;
+    if (name === "price") price = parseFloat(val) || 0;
+  });
+
+  bb.on("close", async () => {
+    try {
+      await db.run(
+        "INSERT INTO files (name, category, path, uploadedBy, price) VALUES (?, ?, ?, ?, ?)",
+        [originalName, category, filePath, req.user.id, price]
+      );
+      res.json({ success: true, file: { name: originalName, path: "/" + filePath } });
+    } catch (err) {
+      console.error("Ошибка записи в базу:", err);
+      res.status(500).json({ error: "Не удалось сохранить файл в базу" });
+    }
+  });
+
+  req.pipe(bb);
+});
 // === Загрузка файлов ===
 app.post("/upload-file", authMiddleware, uploadFile.single("file"), async (req, res) => {
   try {

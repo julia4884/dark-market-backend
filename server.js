@@ -67,11 +67,12 @@ let db;
       type TEXT,
       content TEXT
     );
+
     CREATE TABLE IF NOT EXISTS chat (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      chatType TEXT, -- global или private
+      chatType TEXT,
       senderId INTEGER,
-      receiverId INTEGER, -- для лички, NULL если общий чат
+      receiverId INTEGER,
       content TEXT,
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(senderId) REFERENCES users(id),
@@ -79,7 +80,7 @@ let db;
     );
   `);
 
-  // Создаём админа, если его нет
+  // Создание админа
   const adminEmail = "juliaangelss26@gmail.com";
   const existingAdmin = await db.get("SELECT * FROM users WHERE email = ?", [adminEmail]);
   if (!existingAdmin) {
@@ -91,7 +92,7 @@ let db;
     console.log("👑 Админ создан");
   }
 
-  // Добавляем дефолтные сообщения
+  // Дефолтные сообщения
   const defaultCat = await db.get("SELECT * FROM messages WHERE type = 'cat'");
   if (!defaultCat) {
     await db.run("INSERT INTO messages (type, content) VALUES (?, ?)", [
@@ -121,7 +122,7 @@ function authMiddleware(req, res, next) {
   });
 }
 
-// === Multer для загрузки аватаров ===
+// === Multer ===
 const avatarStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     const dir = path.join(__dirname, "uploads", "avatars");
@@ -132,7 +133,6 @@ const avatarStorage = multer.diskStorage({
 });
 const uploadAvatar = multer({ storage: avatarStorage });
 
-// === Multer для загрузки файлов ===
 const fileStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     const type = req.query.type || "files";
@@ -173,7 +173,6 @@ app.post("/login", async (req, res) => {
   const valid = await bcrypt.compare(password, user.password);
   if (!valid) return res.status(400).json({ error: "Неверная почта или пароль" });
 
-  // Проверяем роль
   const vip = await db.get("SELECT * FROM vip WHERE userId = ? AND active = 1", [user.id]);
   let role = user.role;
   if (user.email === "juliaangelss26@gmail.com") {
@@ -206,12 +205,11 @@ app.get("/profile", authMiddleware, async (req, res) => {
   user.avatar = `/${user.avatar}`;
   res.json(user);
 });
-// === Чат ===
 
-// Загрузить сообщения (общий или личный чат)
-app.get("/chat/:type", async (req, res) => {
+// === Чат ===
+app.get("/chat/:type", authMiddleware, async (req, res) => {
   try {
-    const userId = req.user?.id;
+    const userId = req.user.id;
     const chatType = req.params.type;
 
     if (!["global", "private"].includes(chatType)) {
@@ -226,7 +224,6 @@ app.get("/chat/:type", async (req, res) => {
     `;
 
     if (chatType === "private") {
-      if (!userId) return res.status(401).json({ error: "Требуется вход" });
       query += ` WHERE chat.receiverId = ? OR chat.senderId = ? ORDER BY chat.createdAt DESC LIMIT 50`;
       const messages = await db.all(query, [userId, userId]);
       return res.json(messages.reverse());
@@ -241,12 +238,9 @@ app.get("/chat/:type", async (req, res) => {
   }
 });
 
-// Отправить сообщение
-app.post("/chat/:type", async (req, res) => {
+app.post("/chat/:type", authMiddleware, async (req, res) => {
   try {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ error: "Требуется вход" });
-
+    const userId = req.user.id;
     const { content, receiverId } = req.body;
     const chatType = req.params.type;
 
@@ -270,11 +264,48 @@ app.post("/chat/:type", async (req, res) => {
   }
 });
 
-// === Обновление "О себе" ===
-app.post("/update-about", authMiddleware, async (req, res) => {
-  const { about } = req.body;
-  await db.run("UPDATE users SET about = ? WHERE id = ?", [about, req.user.id]);
-  res.json({ success: true, about });
+// === Выдача сообщений ===
+app.get("/messages/:type", async (req, res) => {
+  const { type } = req.params;
+  const msg = await db.get(
+    "SELECT content FROM messages WHERE type = ? ORDER BY RANDOM() LIMIT 1",
+    [type]
+  );
+  if (!msg) return res.json({ message: "Сообщений пока нет." });
+  res.json({ message: msg.content });
+});
+
+// === Стикеры ===
+app.get("/stickers", async (req, res) => {
+  try {
+    const stickersDir = path.join(__dirname, "uploads", "stickers");
+
+    if (!fs.existsSync(stickersDir)) {
+      return res.json([]);
+    }
+
+    const files = fs.readdirSync(stickersDir)
+      .filter(file => /\.(png|jpg|jpeg|gif|webp)$/i.test(file));
+
+    res.json(files.map(file => ({
+      name: file,
+      url: `/uploads/stickers/${file}`
+    })));
+  } catch (err) {
+    console.error("Ошибка при загрузке стикеров:", err);
+    res.status(500).json({ error: "Не удалось загрузить стикеры" });
+  }
+});
+
+// === Список пользователей ===
+app.get("/users", async (req, res) => {
+  try {
+    const users = await db.all("SELECT id, username FROM users WHERE banned = 0");
+    res.json(users);
+  } catch (err) {
+    console.error("Ошибка получения списка пользователей:", err);
+    res.status(500).json({ error: "Не удалось загрузить пользователей" });
+  }
 });
 
 // === Загрузка аватара ===
@@ -304,82 +335,6 @@ app.post("/upload-file", authMiddleware, uploadFile.single("file"), async (req, 
     console.error("Ошибка загрузки файла:", err);
     res.status(500).json({ error: "Не удалось сохранить файл" });
   }
-});
-
-// === Админка: список файлов ===
-app.get("/admin/files", authMiddleware, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
-  const files = await db.all("SELECT * FROM files ORDER BY createdAt DESC");
-  res.json(files);
-});
-
-// === Админка: управление сообщениями ===
-app.get("/admin/messages", authMiddleware, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
-  const msgs = await db.all("SELECT * FROM messages");
-  res.json(msgs);
-});
-
-app.post("/admin/messages", authMiddleware, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
-  const { type, content } = req.body;
-  await db.run("INSERT INTO messages (type, content) VALUES (?, ?)", [type, content]);
-  res.json({ success: true });
-});
-
-app.put("/admin/messages/:id", authMiddleware, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
-  const { id } = req.params;
-  const { content } = req.body;
-  if (!content) return res.status(400).json({ error: "Текст не может быть пустым" });
-
-  await db.run("UPDATE messages SET content = ? WHERE id = ?", [content, id]);
-  res.json({ success: true });
-});
-
-app.delete("/admin/messages/:id", authMiddleware, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
-  const { id } = req.params;
-  await db.run("DELETE FROM messages WHERE id = ?", [id]);
-  res.json({ success: true });
-});
-
-// === Выдача сообщений ===
-app.get("/messages/:type", async (req, res) => {
-  const { type } = req.params;
-  const msg = await db.get("SELECT content FROM messages WHERE type = ? ORDER BY RANDOM() LIMIT 1", [type]);
-  if (!msg) return res.json({ message: "Сообщений пока нет." });
-  res.json({ message: msg.content });
-  // === Стикеры ===
-app.get("/stickers", async (req, res) => {
-  try {
-    const stickersDir = path.join(__dirname, "uploads", "stickers");
-
-    if (!fs.existsSync(stickersDir)) {
-      return res.json([]);
-    }
-
-    const files = fs.readdirSync(stickersDir)
-      .filter(file => /\.(png|jpg|jpeg|gif|webp)$/i.test(file));
-
-    res.json(files.map(file => ({
-      name: file,
-      url: `/uploads/stickers/${file}`
-    })));
-  } catch (err) {
-    console.error("Ошибка при загрузке стикеров:", err);
-    res.status(500).json({ error: "Не удалось загрузить стикеры" });
-  }
-// === Список пользователей ===
-app.get("/users", async (req, res) => {
-  try {
-    const users = await db.all("SELECT id, username FROM users WHERE banned = 0");
-    res.json(users);
-  } catch (err) {
-    console.error("Ошибка получения списка пользователей:", err);
-    res.status(500).json({ error: "Не удалось загрузить пользователей" });
-  }
-});  
 });
 
 // === PayPal Integration ===
@@ -425,7 +380,6 @@ app.post("/capture-order", authMiddleware, async (req, res) => {
         [req.user.id, expiresAt.toISOString(), amount]
       );
 
-      // === Обновляем роль при донате >= 10€ ===
       if (amount >= 10) {
         await db.run("UPDATE users SET role = 'developer' WHERE id = ?", [req.user.id]);
       }

@@ -163,17 +163,14 @@ app.post("/login", async (req, res) => {
   const valid = await bcrypt.compare(password, user.password);
   if (!valid) return res.status(400).json({ error: "Неверная почта или пароль" });
 
-  // Проверяем донаты для разработчика
-  const vip = await db.get(
-    "SELECT * FROM vip WHERE userId = ? AND active = 1",
-    [user.id]
-  );
-
-  let role = "user";
-  if (user.email === "juliaangelss26@gmail.com" && user.role === "admin") {
+  // Проверяем роль
+  const vip = await db.get("SELECT * FROM vip WHERE userId = ? AND active = 1", [user.id]);
+  let role = user.role;
+  if (user.email === "juliaangelss26@gmail.com") {
     role = "admin";
   } else if (vip && vip.amount >= 10) {
     role = "developer";
+    await db.run("UPDATE users SET role = 'developer' WHERE id = ?", [user.id]);
   }
 
   const token = jwt.sign(
@@ -187,7 +184,7 @@ app.post("/login", async (req, res) => {
 // === Профиль ===
 app.get("/profile", authMiddleware, async (req, res) => {
   let user = await db.get(
-    "SELECT id, username, role, about, avatar FROM users WHERE id = ?",
+    "SELECT id, username, role, about, avatar, email FROM users WHERE id = ?",
     [req.user.id]
   );
   if (!user) return res.status(404).json({ error: "Пользователь не найден" });
@@ -324,6 +321,11 @@ app.post("/capture-order", authMiddleware, async (req, res) => {
         "INSERT INTO vip (userId, expiresAt, amount) VALUES (?, ?, ?)",
         [req.user.id, expiresAt.toISOString(), amount]
       );
+
+      // === Обновляем роль при донате >= 10€ ===
+      if (amount >= 10) {
+        await db.run("UPDATE users SET role = 'developer' WHERE id = ?", [req.user.id]);
+      }
     }
 
     res.json(capture.result);

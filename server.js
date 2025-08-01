@@ -482,6 +482,7 @@ app.post("/capture-order", authMiddleware, async (req, res) => {
       if (amount >= 10) {
         await db.run("UPDATE users SET role = 'developer' WHERE id = ?", [req.user.id]);
     }
+    }
 
     res.json(capture.result);
   } catch (err) {

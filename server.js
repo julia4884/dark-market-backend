@@ -248,6 +248,25 @@ app.post("/admin/messages", authMiddleware, async (req, res) => {
   await db.run("INSERT INTO messages (type, content) VALUES (?, ?)", [type, content]);
   res.json({ success: true });
 });
+// === Редактирование сообщения (админ) ===
+app.put("/admin/messages/:id", authMiddleware, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
+  const { id } = req.params;
+  const { content } = req.body;
+  if (!content) return res.status(400).json({ error: "Текст не может быть пустым" });
+
+  await db.run("UPDATE messages SET content = ? WHERE id = ?", [content, id]);
+  res.json({ success: true });
+});
+
+// === Удаление сообщения (админ) ===
+app.delete("/admin/messages/:id", authMiddleware, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
+  const { id } = req.params;
+
+  await db.run("DELETE FROM messages WHERE id = ?", [id]);
+  res.json({ success: true });
+});
 
 app.put("/admin/messages/:id", authMiddleware, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });

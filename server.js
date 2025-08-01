@@ -481,16 +481,15 @@ app.post("/capture-order", authMiddleware, async (req, res) => {
 
       if (amount >= 10) {
         await db.run("UPDATE users SET role = 'developer' WHERE id = ?", [req.user.id]);
-    }
-    }
+      }
 
-    res.json(capture.result);
+      res.json(capture.result);
+    }
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Ошибка при подтверждении платежа" });
   }
 });
-
 // === VIP проверка ===
 app.get("/check-vip", authMiddleware, async (req, res) => {
   const vip = await db.get("SELECT * FROM vip WHERE userId = ? AND active = 1", [req.user.id]);

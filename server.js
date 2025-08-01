@@ -163,6 +163,29 @@ const fileStorage = multer.diskStorage({
   },
   filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname),
 });
+// === Загрузка файлов ===
+app.post("/upload-file", authMiddleware, uploadFile.single("file"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "Файл не загружен" });
+    }
+
+    const { originalname, filename } = req.file;
+    const { category, price } = req.body;
+
+    const filePath = path.join("uploads", req.query.type || "files", filename);
+
+    await db.run(
+      "INSERT INTO files (name, category, path, uploadedBy, price) VALUES (?, ?, ?, ?, ?)",
+      [originalname, category || "general", filePath, req.user.id, price || 0]
+    );
+
+    res.json({ success: true, file: { name: originalname, path: `/${filePath}` } });
+  } catch (err) {
+    console.error("Ошибка загрузки файла:", err);
+    res.status(500).json({ error: "Не удалось загрузить файл" });
+  }
+});
 const uploadFile = multer({ storage: fileStorage });
 
 // === Регистрация ===

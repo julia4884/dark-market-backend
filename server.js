@@ -350,6 +350,26 @@ app.get("/messages/:type", async (req, res) => {
   const msg = await db.get("SELECT content FROM messages WHERE type = ? ORDER BY RANDOM() LIMIT 1", [type]);
   if (!msg) return res.json({ message: "Сообщений пока нет." });
   res.json({ message: msg.content });
+  // === Стикеры ===
+app.get("/stickers", async (req, res) => {
+  try {
+    const stickersDir = path.join(__dirname, "uploads", "stickers");
+
+    if (!fs.existsSync(stickersDir)) {
+      return res.json([]);
+    }
+
+    const files = fs.readdirSync(stickersDir)
+      .filter(file => /\.(png|jpg|jpeg|gif|webp)$/i.test(file));
+
+    res.json(files.map(file => ({
+      name: file,
+      url: `/uploads/stickers/${file}`
+    })));
+  } catch (err) {
+    console.error("Ошибка при загрузке стикеров:", err);
+    res.status(500).json({ error: "Не удалось загрузить стикеры" });
+  }
 });
 
 // === PayPal Integration ===

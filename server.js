@@ -43,12 +43,15 @@ let db;
       avatar TEXT DEFAULT 'uploads/avatars/default.png'
     );
 
-    CREATE TABLE IF NOT EXISTS apps (
+    CREATE TABLE IF NOT EXISTS files (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT,
-      description TEXT,
+      category TEXT,
+      path TEXT,
+      uploadedBy INTEGER,
       price REAL DEFAULT 0,
-      banned INTEGER DEFAULT 0
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(uploadedBy) REFERENCES users(id)
     );
 
     CREATE TABLE IF NOT EXISTS vip (
@@ -57,6 +60,12 @@ let db;
       active INTEGER DEFAULT 1,
       expiresAt TEXT,
       FOREIGN KEY(userId) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type TEXT, -- 'cat' или 'bat'
+      content TEXT
     );
   `);
 
@@ -70,6 +79,22 @@ let db;
       ["Admin", adminEmail, hashed, "admin"]
     );
     console.log("👑 Админ создан");
+  }
+
+  // Добавляем дефолтные сообщения
+  const defaultCat = await db.get("SELECT * FROM messages WHERE type = 'cat'");
+  if (!defaultCat) {
+    await db.run("INSERT INTO messages (type, content) VALUES (?, ?)", [
+      "cat",
+      "Мяу! Я твоя тёмная помощница 🐾",
+    ]);
+  }
+  const defaultBat = await db.get("SELECT * FROM messages WHERE type = 'bat'");
+  if (!defaultBat) {
+    await db.run("INSERT INTO messages (type, content) VALUES (?, ?)", [
+      "bat",
+      "Шшш... Новости из теней 🦇",
+    ]);
   }
 })();
 
@@ -100,7 +125,7 @@ const uploadAvatar = multer({ storage: avatarStorage });
 // === Multer для загрузки файлов ===
 const fileStorage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const type = req.query.type || "files"; // apps, books, movies, music, etc.
+    const type = req.query.type || "files";
     const dir = path.join(__dirname, "uploads", type);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     cb(null, dir);
@@ -113,6 +138,9 @@ const uploadFile = multer({ storage: fileStorage });
 app.post("/register", async (req, res) => {
   const { username, email, password } = req.body;
   try {
+    if (!username || !email || !password) {
+      return res.status(400).json({ error: "Заполните все поля" });
+    }
     const hashed = await bcrypt.hash(password, 10);
     await db.run(
       "INSERT INTO users (username, email, password) VALUES (?, ?, ?)",
@@ -170,7 +198,7 @@ app.post("/upload-avatar", authMiddleware, uploadAvatar.single("avatar"), async 
   res.json({ success: true, avatar: filePath });
 });
 
-// === Загрузка файлов ===
+// === Загрузка файлов с категориями ===
 app.post("/upload-file", authMiddleware, uploadFile.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Файл не получен" });
 
@@ -178,8 +206,8 @@ app.post("/upload-file", authMiddleware, uploadFile.single("file"), async (req, 
   const filePath = `uploads/${type}/${req.file.filename}`;
 
   await db.run(
-    "INSERT INTO apps (name, description, price) VALUES (?, ?, ?)",
-    [req.file.originalname, `${type} upload`, 0]
+    "INSERT INTO files (name, category, path, uploadedBy) VALUES (?, ?, ?, ?)",
+    [req.file.originalname, type, filePath, req.user.id]
   );
 
   res.json({ success: true, path: filePath });
@@ -195,73 +223,26 @@ app.get("/download/:folder/:filename", authMiddleware, (req, res) => {
   res.download(filePath);
 });
 
-// === Блокировка пользователя (только админ) ===
-app.post("/ban-user", authMiddleware, async (req, res) => {
-  if (req.user.role !== "admin")
-    return res.status(403).json({ error: "Доступ запрещен" });
+// === Админка: управление сообщениями ===
+app.get("/admin/messages", authMiddleware, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
+  const msgs = await db.all("SELECT * FROM messages");
+  res.json(msgs);
+});
 
-  const { username } = req.body;
-  const user = await db.get("SELECT * FROM users WHERE username = ?", [username]);
-  if (!user) return res.status(404).json({ error: "Пользователь не найден" });
-
-  await db.run("UPDATE users SET banned = 1 WHERE username = ?", [username]);
+app.post("/admin/messages", authMiddleware, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
+  const { type, content } = req.body;
+  await db.run("INSERT INTO messages (type, content) VALUES (?, ?)", [type, content]);
   res.json({ success: true });
 });
 
-// === Админка: список юзеров ===
-app.get("/admin/users", authMiddleware, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
-  const users = await db.all("SELECT id, username, email, role, banned FROM users");
-  res.json(users);
-});
-
-// === Админка: список файлов ===
-app.get("/admin/files", authMiddleware, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
-
-  const files = [];
-  const folders = ["apps", "books", "movies", "music", "photos", "tools", "games", "files"];
-  for (let folder of folders) {
-    const dir = path.join(__dirname, "uploads", folder);
-    if (fs.existsSync(dir)) {
-      const folderFiles = fs.readdirSync(dir).map((f) => ({
-        folder,
-        filename: f,
-      }));
-      files.push(...folderFiles);
-    }
-  }
-  res.json(files);
-});
-
-// === Отправка сообщений администратору ===
-app.post("/contact", async (req, res) => {
-  const { email, message } = req.body;
-  if (!email || !message) {
-    return res.status(400).json({ error: "Укажите email и сообщение" });
-  }
-
-  try {
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        user: "juliaangelss26@gmail.com",
-        pass: process.env.GMAIL_PASS,
-      },
-    });
-
-    await transporter.sendMail({
-      from: email,
-      to: "juliaangelss26@gmail.com",
-      subject: "Сообщение с сайта Dark Market Ultra",
-      text: message,
-    });
-
-    res.json({ success: true, message: "Сообщение отправлено!" });
-  } catch (error) {
-    console.error("Ошибка при отправке:", error);
-    res.status(500).json({ error: "Не удалось отправить сообщение" });
-  }
+// === Выдача сообщений ===
+app.get("/messages/:type", async (req, res) => {
+  const { type } = req.params;
+  const msg = await db.get("SELECT content FROM messages WHERE type = ? ORDER BY RANDOM() LIMIT 1", [type]);
+  if (!msg) return res.json({ message: "Сообщений пока нет." });
+  res.json({ message: msg.content });
 });
 
 // === PayPal Integration ===
@@ -279,7 +260,7 @@ app.post("/create-order", async (req, res) => {
   request.prefer("return=representation");
   request.requestBody({
     intent: "CAPTURE",
-    purchase_units: [{ amount: { currency_code: "USD", value: amount } }],
+    purchase_units: [{ amount: { currency_code: "EUR", value: amount } }],
   });
 
   try {
@@ -328,14 +309,6 @@ app.get("/check-vip", authMiddleware, async (req, res) => {
     return res.json({ vip: false });
   }
   res.json({ vip: true, expiresAt: vip.expiresAt });
-});
-
-// === Сообщения от кошки и мыши ===
-app.get("/messages/cat", (req, res) => {
-  res.json({ message: "Мяу! Я твоя тёмная помощница 🐾" });
-});
-app.get("/messages/bat", (req, res) => {
-  res.json({ message: "Шшш... Новости из теней 🦇" });
 });
 
 // === Запуск сервера ===

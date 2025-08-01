@@ -206,6 +206,69 @@ app.get("/profile", authMiddleware, async (req, res) => {
   user.avatar = `/${user.avatar}`;
   res.json(user);
 });
+// === Чат ===
+
+// Загрузить сообщения (общий или личный чат)
+app.get("/chat/:type", async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const chatType = req.params.type;
+
+    if (!["global", "private"].includes(chatType)) {
+      return res.status(400).json({ error: "Неверный тип чата" });
+    }
+
+    let query = `
+      SELECT chat.id, chat.content, chat.createdAt, 
+             u.username, u.role
+      FROM chat
+      JOIN users u ON u.id = chat.senderId
+    `;
+
+    if (chatType === "private") {
+      if (!userId) return res.status(401).json({ error: "Требуется вход" });
+      query += ` WHERE chat.receiverId = ? OR chat.senderId = ? ORDER BY chat.createdAt DESC LIMIT 50`;
+      const messages = await db.all(query, [userId, userId]);
+      return res.json(messages.reverse());
+    } else {
+      query += ` WHERE chat.chatType = 'global' ORDER BY chat.createdAt DESC LIMIT 50`;
+      const messages = await db.all(query);
+      return res.json(messages.reverse());
+    }
+  } catch (e) {
+    console.error("Ошибка загрузки чата:", e);
+    res.status(500).json({ error: "Ошибка сервера" });
+  }
+});
+
+// Отправить сообщение
+app.post("/chat/:type", async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "Требуется вход" });
+
+    const { content, receiverId } = req.body;
+    const chatType = req.params.type;
+
+    if (!content || content.length > 500) {
+      return res.status(400).json({ error: "Сообщение пустое или слишком длинное" });
+    }
+
+    if (chatType === "private" && !receiverId) {
+      return res.status(400).json({ error: "Укажите получателя" });
+    }
+
+    await db.run(
+      `INSERT INTO chat (chatType, senderId, receiverId, content) VALUES (?, ?, ?, ?)`,
+      [chatType, userId, chatType === "private" ? receiverId : null, content]
+    );
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error("Ошибка отправки сообщения:", e);
+    res.status(500).json({ error: "Ошибка сервера" });
+  }
+});
 
 // === Обновление "О себе" ===
 app.post("/update-about", authMiddleware, async (req, res) => {

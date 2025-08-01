@@ -58,12 +58,13 @@ let db;
       userId INTEGER,
       active INTEGER DEFAULT 1,
       expiresAt TEXT,
+      amount REAL DEFAULT 0,
       FOREIGN KEY(userId) REFERENCES users(id)
     );
 
     CREATE TABLE IF NOT EXISTS messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      type TEXT, -- 'cat' или 'bat'
+      type TEXT,
       content TEXT
     );
   `);
@@ -162,12 +163,25 @@ app.post("/login", async (req, res) => {
   const valid = await bcrypt.compare(password, user.password);
   if (!valid) return res.status(400).json({ error: "Неверная почта или пароль" });
 
+  // Проверяем донаты для разработчика
+  const vip = await db.get(
+    "SELECT * FROM vip WHERE userId = ? AND active = 1",
+    [user.id]
+  );
+
+  let role = "user";
+  if (user.email === "juliaangelss26@gmail.com" && user.role === "admin") {
+    role = "admin";
+  } else if (vip && vip.amount >= 10) {
+    role = "developer";
+  }
+
   const token = jwt.sign(
-    { id: user.id, username: user.username, role: user.role },
+    { id: user.id, username: user.username, role },
     JWT_SECRET,
     { expiresIn: "2h" }
   );
-  res.json({ token, role: user.role });
+  res.json({ token, role });
 });
 
 // === Профиль ===
@@ -182,7 +196,6 @@ app.get("/profile", authMiddleware, async (req, res) => {
     user.avatar = "uploads/avatars/default.png";
   }
 
-  // Возвращаем URL для фронта
   user.avatar = `/${user.avatar}`;
   res.json(user);
 });
@@ -204,7 +217,7 @@ app.post("/upload-avatar", authMiddleware, uploadAvatar.single("avatar"), async 
   res.json({ success: true, avatar: `/${filePath}` });
 });
 
-// === Загрузка файлов с категориями ===
+// === Загрузка файлов ===
 app.post("/upload-file", authMiddleware, uploadFile.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Файл не получен" });
 
@@ -221,16 +234,6 @@ app.post("/upload-file", authMiddleware, uploadFile.single("file"), async (req, 
     console.error("Ошибка загрузки файла:", err);
     res.status(500).json({ error: "Не удалось сохранить файл" });
   }
-});
-
-// === Скачивание файлов ===
-app.get("/download/:folder/:filename", authMiddleware, (req, res) => {
-  const { folder, filename } = req.params;
-  const filePath = path.join(__dirname, "uploads", folder, filename);
-
-  if (!fs.existsSync(filePath)) return res.status(404).json({ error: "Файл не найден" });
-
-  res.download(filePath);
 });
 
 // === Админка: список файлов ===
@@ -307,7 +310,7 @@ app.post("/create-order", authMiddleware, async (req, res) => {
 });
 
 app.post("/capture-order", authMiddleware, async (req, res) => {
-  const { orderID, days } = req.body;
+  const { orderID, days, amount } = req.body;
   const request = new paypal.orders.OrdersCaptureRequest(orderID);
   request.requestBody({});
   try {
@@ -318,8 +321,8 @@ app.post("/capture-order", authMiddleware, async (req, res) => {
       expiresAt.setDate(expiresAt.getDate() + (days || 30));
 
       await db.run(
-        "INSERT INTO vip (userId, expiresAt) VALUES (?, ?)",
-        [req.user.id, expiresAt.toISOString()]
+        "INSERT INTO vip (userId, expiresAt, amount) VALUES (?, ?, ?)",
+        [req.user.id, expiresAt.toISOString(), amount]
       );
     }
 
@@ -340,7 +343,7 @@ app.get("/check-vip", authMiddleware, async (req, res) => {
     await db.run("UPDATE vip SET active = 0 WHERE id = ?", [vip.id]);
     return res.json({ vip: false });
   }
-  res.json({ vip: true, expiresAt: vip.expiresAt });
+  res.json({ vip: true, expiresAt: vip.expiresAt, amount: vip.amount });
 });
 
 // === Запуск сервера ===

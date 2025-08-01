@@ -370,6 +370,16 @@ app.get("/stickers", async (req, res) => {
     console.error("Ошибка при загрузке стикеров:", err);
     res.status(500).json({ error: "Не удалось загрузить стикеры" });
   }
+// === Список пользователей ===
+app.get("/users", async (req, res) => {
+  try {
+    const users = await db.all("SELECT id, username FROM users WHERE banned = 0");
+    res.json(users);
+  } catch (err) {
+    console.error("Ошибка получения списка пользователей:", err);
+    res.status(500).json({ error: "Не удалось загрузить пользователей" });
+  }
+});  
 });
 
 // === PayPal Integration ===

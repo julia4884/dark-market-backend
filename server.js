@@ -67,6 +67,16 @@ let db;
       type TEXT,
       content TEXT
     );
+    CREATE TABLE IF NOT EXISTS chat (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chatType TEXT, -- global или private
+      senderId INTEGER,
+      receiverId INTEGER, -- для лички, NULL если общий чат
+      content TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(senderId) REFERENCES users(id),
+      FOREIGN KEY(receiverId) REFERENCES users(id)
+    );
   `);
 
   // Создаём админа, если его нет

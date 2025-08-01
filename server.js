@@ -77,6 +77,25 @@ let db;
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(senderId) REFERENCES users(id),
       FOREIGN KEY(receiverId) REFERENCES users(id)
+      CREATE TABLE IF NOT EXISTS file_comments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      fileId INTEGER,
+      userId INTEGER,
+      content TEXT,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(fileId) REFERENCES files(id),
+      FOREIGN KEY(userId) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS file_likes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      fileId INTEGER,
+      userId INTEGER,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(fileId, userId),
+      FOREIGN KEY(fileId) REFERENCES files(id),
+      FOREIGN KEY(userId) REFERENCES users(id)
+    );
     );
   `);
 
@@ -334,6 +353,78 @@ app.post("/upload-file", authMiddleware, uploadFile.single("file"), async (req, 
   } catch (err) {
     console.error("Ошибка загрузки файла:", err);
     res.status(500).json({ error: "Не удалось сохранить файл" });
+  }
+});
+// === Комментарии к файлам ===
+app.get("/files/:id/comments", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const comments = await db.all(
+      `SELECT fc.id, fc.content, fc.createdAt, u.username 
+       FROM file_comments fc
+       JOIN users u ON u.id = fc.userId
+       WHERE fc.fileId = ?
+       ORDER BY fc.createdAt DESC`,
+      [id]
+    );
+    res.json(comments);
+  } catch {
+    res.status(500).json({ error: "Ошибка загрузки комментариев" });
+  }
+});
+
+app.post("/files/:id/comments", authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { content } = req.body;
+    if (!content) return res.status(400).json({ error: "Комментарий пустой" });
+
+    await db.run(
+      "INSERT INTO file_comments (fileId, userId, content) VALUES (?, ?, ?)",
+      [id, req.user.id, content]
+    );
+    res.json({ success: true });
+  } catch {
+    res.status(500).json({ error: "Ошибка добавления комментария" });
+  }
+});
+
+// === Лайки ("мяук") ===
+app.post("/files/:id/like", authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // проверка: лайк уже есть?
+    const existing = await db.get(
+      "SELECT * FROM file_likes WHERE fileId = ? AND userId = ?",
+      [id, req.user.id]
+    );
+
+    if (existing) {
+      await db.run("DELETE FROM file_likes WHERE id = ?", [existing.id]);
+      return res.json({ success: true, liked: false });
+    } else {
+      await db.run("INSERT INTO file_likes (fileId, userId) VALUES (?, ?)", [
+        id,
+        req.user.id,
+      ]);
+      return res.json({ success: true, liked: true });
+    }
+  } catch {
+    res.status(500).json({ error: "Ошибка лайка" });
+  }
+});
+
+app.get("/files/:id/likes", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const count = await db.get(
+      "SELECT COUNT(*) as total FROM file_likes WHERE fileId = ?",
+      [id]
+    );
+    res.json({ total: count.total });
+  } catch {
+    res.status(500).json({ error: "Ошибка подсчёта лайков" });
   }
 });
 

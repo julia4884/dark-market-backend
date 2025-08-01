@@ -77,7 +77,9 @@ let db;
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(senderId) REFERENCES users(id),
       FOREIGN KEY(receiverId) REFERENCES users(id)
-      CREATE TABLE IF NOT EXISTS file_comments (
+    );
+
+    CREATE TABLE IF NOT EXISTS file_comments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       fileId INTEGER,
       userId INTEGER,
@@ -96,10 +98,9 @@ let db;
       FOREIGN KEY(fileId) REFERENCES files(id),
       FOREIGN KEY(userId) REFERENCES users(id)
     );
-    );
   `);
 
-  // Создание админа
+  // Создаём админа, если его нет
   const adminEmail = "juliaangelss26@gmail.com";
   const existingAdmin = await db.get("SELECT * FROM users WHERE email = ?", [adminEmail]);
   if (!existingAdmin) {
@@ -111,7 +112,7 @@ let db;
     console.log("👑 Админ создан");
   }
 
-  // Дефолтные сообщения
+  // Добавляем дефолтные сообщения
   const defaultCat = await db.get("SELECT * FROM messages WHERE type = 'cat'");
   if (!defaultCat) {
     await db.run("INSERT INTO messages (type, content) VALUES (?, ?)", [
@@ -141,7 +142,7 @@ function authMiddleware(req, res, next) {
   });
 }
 
-// === Multer ===
+// === Multer для загрузки аватаров ===
 const avatarStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     const dir = path.join(__dirname, "uploads", "avatars");
@@ -152,6 +153,7 @@ const avatarStorage = multer.diskStorage({
 });
 const uploadAvatar = multer({ storage: avatarStorage });
 
+// === Multer для загрузки файлов ===
 const fileStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     const type = req.query.type || "files";
@@ -228,7 +230,7 @@ app.get("/profile", authMiddleware, async (req, res) => {
 // === Чат ===
 app.get("/chat/:type", authMiddleware, async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user?.id;
     const chatType = req.params.type;
 
     if (!["global", "private"].includes(chatType)) {
@@ -259,7 +261,7 @@ app.get("/chat/:type", authMiddleware, async (req, res) => {
 
 app.post("/chat/:type", authMiddleware, async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user?.id;
     const { content, receiverId } = req.body;
     const chatType = req.params.type;
 
@@ -283,78 +285,6 @@ app.post("/chat/:type", authMiddleware, async (req, res) => {
   }
 });
 
-// === Выдача сообщений ===
-app.get("/messages/:type", async (req, res) => {
-  const { type } = req.params;
-  const msg = await db.get(
-    "SELECT content FROM messages WHERE type = ? ORDER BY RANDOM() LIMIT 1",
-    [type]
-  );
-  if (!msg) return res.json({ message: "Сообщений пока нет." });
-  res.json({ message: msg.content });
-});
-
-// === Стикеры ===
-app.get("/stickers", async (req, res) => {
-  try {
-    const stickersDir = path.join(__dirname, "uploads", "stickers");
-
-    if (!fs.existsSync(stickersDir)) {
-      return res.json([]);
-    }
-
-    const files = fs.readdirSync(stickersDir)
-      .filter(file => /\.(png|jpg|jpeg|gif|webp)$/i.test(file));
-
-    res.json(files.map(file => ({
-      name: file,
-      url: `/uploads/stickers/${file}`
-    })));
-  } catch (err) {
-    console.error("Ошибка при загрузке стикеров:", err);
-    res.status(500).json({ error: "Не удалось загрузить стикеры" });
-  }
-});
-
-// === Список пользователей ===
-app.get("/users", async (req, res) => {
-  try {
-    const users = await db.all("SELECT id, username FROM users WHERE banned = 0");
-    res.json(users);
-  } catch (err) {
-    console.error("Ошибка получения списка пользователей:", err);
-    res.status(500).json({ error: "Не удалось загрузить пользователей" });
-  }
-});
-
-// === Загрузка аватара ===
-app.post("/upload-avatar", authMiddleware, uploadAvatar.single("avatar"), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "Файл не получен" });
-
-  const filePath = `uploads/avatars/${req.file.filename}`;
-  await db.run("UPDATE users SET avatar = ? WHERE id = ?", [filePath, req.user.id]);
-
-  res.json({ success: true, avatar: `/${filePath}` });
-});
-
-// === Загрузка файлов ===
-app.post("/upload-file", authMiddleware, uploadFile.single("file"), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "Файл не получен" });
-
-  const type = req.query.type || "files";
-  const filePath = `uploads/${type}/${req.file.filename}`;
-
-  try {
-    await db.run(
-      "INSERT INTO files (name, category, path, uploadedBy) VALUES (?, ?, ?, ?)",
-      [req.file.originalname, type, filePath, req.user.id]
-    );
-    res.json({ success: true, path: `/${filePath}` });
-  } catch (err) {
-    console.error("Ошибка загрузки файла:", err);
-    res.status(500).json({ error: "Не удалось сохранить файл" });
-  }
-});
 // === Комментарии к файлам ===
 app.get("/files/:id/comments", async (req, res) => {
   try {
@@ -394,7 +324,6 @@ app.post("/files/:id/like", authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // проверка: лайк уже есть?
     const existing = await db.get(
       "SELECT * FROM file_likes WHERE fileId = ? AND userId = ?",
       [id, req.user.id]
@@ -425,6 +354,85 @@ app.get("/files/:id/likes", async (req, res) => {
     res.json({ total: count.total });
   } catch {
     res.status(500).json({ error: "Ошибка подсчёта лайков" });
+  }
+});
+
+// === Админка: список файлов ===
+app.get("/admin/files", authMiddleware, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
+  const files = await db.all("SELECT * FROM files ORDER BY createdAt DESC");
+  res.json(files);
+});
+
+// === Админка: управление сообщениями ===
+app.get("/admin/messages", authMiddleware, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
+  const msgs = await db.all("SELECT * FROM messages");
+  res.json(msgs);
+});
+
+app.post("/admin/messages", authMiddleware, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
+  const { type, content } = req.body;
+  await db.run("INSERT INTO messages (type, content) VALUES (?, ?)", [type, content]);
+  res.json({ success: true });
+});
+
+app.put("/admin/messages/:id", authMiddleware, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
+  const { id } = req.params;
+  const { content } = req.body;
+  if (!content) return res.status(400).json({ error: "Текст не может быть пустым" });
+
+  await db.run("UPDATE messages SET content = ? WHERE id = ?", [content, id]);
+  res.json({ success: true });
+});
+
+app.delete("/admin/messages/:id", authMiddleware, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
+  const { id } = req.params;
+  await db.run("DELETE FROM messages WHERE id = ?", [id]);
+  res.json({ success: true });
+});
+
+// === Сообщения (кошка и летучая мышь) ===
+app.get("/messages/:type", async (req, res) => {
+  const { type } = req.params;
+  const msg = await db.get("SELECT content FROM messages WHERE type = ? ORDER BY RANDOM() LIMIT 1", [type]);
+  if (!msg) return res.json({ message: "Сообщений пока нет." });
+  res.json({ message: msg.content });
+});
+
+// === Стикеры ===
+app.get("/stickers", async (req, res) => {
+  try {
+    const stickersDir = path.join(__dirname, "uploads", "stickers");
+
+    if (!fs.existsSync(stickersDir)) {
+      return res.json([]);
+    }
+
+    const files = fs.readdirSync(stickersDir)
+      .filter(file => /\.(png|jpg|jpeg|gif|webp)$/i.test(file));
+
+    res.json(files.map(file => ({
+      name: file,
+      url: `/uploads/stickers/${file}`
+    })));
+  } catch (err) {
+    console.error("Ошибка при загрузке стикеров:", err);
+    res.status(500).json({ error: "Не удалось загрузить стикеры" });
+  }
+});
+
+// === Список пользователей ===
+app.get("/users", async (req, res) => {
+  try {
+    const users = await db.all("SELECT id, username FROM users WHERE banned = 0");
+    res.json(users);
+  } catch (err) {
+    console.error("Ошибка получения списка пользователей:", err);
+    res.status(500).json({ error: "Не удалось загрузить пользователей" });
   }
 });
 
@@ -472,6 +480,8 @@ app.post("/capture-order", authMiddleware, async (req, res) => {
       );
 
       if (amount >= 10) {
+        await db.run("UPDATE users SET role = 'developer' WHERE id = ?", [req.user.id]);
+        if (amount >= 10) {
         await db.run("UPDATE users SET role = 'developer' WHERE id = ?", [req.user.id]);
       }
     }

@@ -9,7 +9,6 @@ import { open } from "sqlite";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
-import nodemailer from "nodemailer";
 import paypal from "@paypal/checkout-server-sdk";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -183,6 +182,8 @@ app.get("/profile", authMiddleware, async (req, res) => {
     user.avatar = "uploads/avatars/default.png";
   }
 
+  // Возвращаем URL для фронта
+  user.avatar = `/${user.avatar}`;
   res.json(user);
 });
 
@@ -200,7 +201,7 @@ app.post("/upload-avatar", authMiddleware, uploadAvatar.single("avatar"), async 
   const filePath = `uploads/avatars/${req.file.filename}`;
   await db.run("UPDATE users SET avatar = ? WHERE id = ?", [filePath, req.user.id]);
 
-  res.json({ success: true, avatar: filePath });
+  res.json({ success: true, avatar: `/${filePath}` });
 });
 
 // === Загрузка файлов с категориями ===
@@ -210,12 +211,16 @@ app.post("/upload-file", authMiddleware, uploadFile.single("file"), async (req, 
   const type = req.query.type || "files";
   const filePath = `uploads/${type}/${req.file.filename}`;
 
-  await db.run(
-    "INSERT INTO files (name, category, path, uploadedBy) VALUES (?, ?, ?, ?)",
-    [req.file.originalname, type, filePath, req.user.id]
-  );
-
-  res.json({ success: true, path: filePath });
+  try {
+    await db.run(
+      "INSERT INTO files (name, category, path, uploadedBy) VALUES (?, ?, ?, ?)",
+      [req.file.originalname, type, filePath, req.user.id]
+    );
+    res.json({ success: true, path: `/${filePath}` });
+  } catch (err) {
+    console.error("Ошибка загрузки файла:", err);
+    res.status(500).json({ error: "Не удалось сохранить файл" });
+  }
 });
 
 // === Скачивание файлов ===
@@ -248,30 +253,13 @@ app.post("/admin/messages", authMiddleware, async (req, res) => {
   await db.run("INSERT INTO messages (type, content) VALUES (?, ?)", [type, content]);
   res.json({ success: true });
 });
-// === Редактирование сообщения (админ) ===
+
 app.put("/admin/messages/:id", authMiddleware, async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
   const { id } = req.params;
   const { content } = req.body;
   if (!content) return res.status(400).json({ error: "Текст не может быть пустым" });
 
-  await db.run("UPDATE messages SET content = ? WHERE id = ?", [content, id]);
-  res.json({ success: true });
-});
-
-// === Удаление сообщения (админ) ===
-app.delete("/admin/messages/:id", authMiddleware, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
-  const { id } = req.params;
-
-  await db.run("DELETE FROM messages WHERE id = ?", [id]);
-  res.json({ success: true });
-});
-
-app.put("/admin/messages/:id", authMiddleware, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Доступ запрещен" });
-  const { id } = req.params;
-  const { content } = req.body;
   await db.run("UPDATE messages SET content = ? WHERE id = ?", [content, id]);
   res.json({ success: true });
 });
@@ -300,7 +288,7 @@ const paypalClient = new paypal.core.PayPalHttpClient(
   )
 );
 
-app.post("/create-order", async (req, res) => {
+app.post("/create-order", authMiddleware, async (req, res) => {
   const { amount } = req.body;
   const request = new paypal.orders.OrdersCreateRequest();
   request.prefer("return=representation");
@@ -318,8 +306,8 @@ app.post("/create-order", async (req, res) => {
   }
 });
 
-app.post("/capture-order", async (req, res) => {
-  const { orderID, days, userId } = req.body;
+app.post("/capture-order", authMiddleware, async (req, res) => {
+  const { orderID, days } = req.body;
   const request = new paypal.orders.OrdersCaptureRequest(orderID);
   request.requestBody({});
   try {
@@ -331,7 +319,7 @@ app.post("/capture-order", async (req, res) => {
 
       await db.run(
         "INSERT INTO vip (userId, expiresAt) VALUES (?, ?)",
-        [userId, expiresAt.toISOString()]
+        [req.user.id, expiresAt.toISOString()]
       );
     }
 

@@ -187,6 +187,105 @@ app.post("/upload-file", authMiddleware, uploadFile.single("file"), async (req, 
     res.status(500).json({ error: "Не удалось загрузить файл" });
   }
 });
+// === Загрузка аватара ===
+app.post("/upload-avatar", authMiddleware, uploadAvatar.single("avatar"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "Аватар не загружен" });
+
+    const filePath = path.join("uploads", "avatars", req.file.filename);
+
+    // Сохраняем новый путь в профиле
+    await db.run("UPDATE users SET avatar = ? WHERE id = ?", [filePath, req.user.id]);
+
+    res.json({ success: true, avatar: `/${filePath}` });
+  } catch (err) {
+    console.error("Ошибка загрузки аватара:", err);
+    res.status(500).json({ error: "Не удалось загрузить аватар" });
+  }
+});
+
+// === Обновление профиля ===
+app.put("/profile", authMiddleware, async (req, res) => {
+  const { username, about } = req.body;
+  try {
+    if (!username) return res.status(400).json({ error: "Имя не может быть пустым" });
+
+    await db.run("UPDATE users SET username = ?, about = ? WHERE id = ?", [
+      username,
+      about || "",
+      req.user.id,
+    ]);
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Ошибка обновления профиля:", err);
+    res.status(500).json({ error: "Не удалось обновить профиль" });
+  }
+});
+
+// === Удаление файлов (только автор или админ) ===
+app.delete("/files/:id", authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const file = await db.get("SELECT * FROM files WHERE id = ?", [id]);
+    if (!file) return res.status(404).json({ error: "Файл не найден" });
+
+    if (file.uploadedBy !== req.user.id && req.user.role !== "admin") {
+      return res.status(403).json({ error: "Нет прав на удаление файла" });
+    }
+
+    // Удаляем физический файл
+    const filePath = path.join(__dirname, file.path);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+    // Удаляем запись из БД
+    await db.run("DELETE FROM files WHERE id = ?", [id]);
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Ошибка удаления файла:", err);
+    res.status(500).json({ error: "Не удалось удалить файл" });
+  }
+});
+
+// === Фильтр типов файлов ===
+const safeExtensions = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".txt", ".zip"];
+const uploadSafeFile = multer({
+  storage: fileStorage,
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (!safeExtensions.includes(ext)) {
+      return cb(new Error("Недопустимый тип файла"));
+    }
+    cb(null, true);
+  },
+});
+
+// Используй uploadSafeFile вместо uploadFile, если хочешь ограничение
+app.post("/safe-upload", authMiddleware, uploadSafeFile.single("file"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "Файл не загружен" });
+
+    const { originalname, filename } = req.file;
+    const { category, price } = req.body;
+
+    // Проверяем категорию
+    const allowedCategories = ["general", "docs", "images", "music"];
+    const cat = allowedCategories.includes(category) ? category : "general";
+
+    const filePath = path.join("uploads", req.query.type || "files", filename);
+
+    await db.run(
+      "INSERT INTO files (name, category, path, uploadedBy, price) VALUES (?, ?, ?, ?, ?)",
+      [originalname, cat, filePath, req.user.id, price || 0]
+    );
+
+    res.json({ success: true, file: { name: originalname, path: `/${filePath}` } });
+  } catch (err) {
+    console.error("Ошибка безопасной загрузки:", err);
+    res.status(500).json({ error: "Не удалось загрузить файл" });
+  }
+});
 
 // === Регистрация ===
 app.post("/register", async (req, res) => {

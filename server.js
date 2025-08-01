@@ -9,12 +9,11 @@ import { open } from "sqlite";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
+import dotenv from "dotenv";
+dotenv.config();
 import paypal from "@paypal/checkout-server-sdk";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
-import dotenv from "dotenv";
-
-dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -630,8 +629,8 @@ app.get("/users", async (req, res) => {
 const Environment = paypal.core.SandboxEnvironment;
 const paypalClient = new paypal.core.PayPalHttpClient(
   new Environment(
-    process.env.PAYPAL_CLIENT_ID || "AU9A6gbVWpQ5gu6oWT8alj1wMqgTUDqDM5bidlDBYujcispGUtVZkqFKGZ7rEpuT0FcGbMM8To7Kiv-6",
-    process.env.PAYPAL_CLIENT_SECRET || "EFot3o0eLa_AtP69rmS_7InXZcm4dppF-cRjJFh10uXs51Tu58jVclVShzc50dXh9-mKmlCYQB7r-bM9"
+    process.env.PAYPAL_CLIENT_ID,
+    process.env.PAYPAL_CLIENT_SECRET
   )
 );
 

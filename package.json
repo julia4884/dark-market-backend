@@ -19,7 +19,8 @@
     "nodemailer": "^6.9.5",
     "@paypal/checkout-server-sdk": "^1.0.3",
     "sqlite": "^4.2.1",
-    "sqlite3": "^5.1.6"
+    "sqlite3": "^5.1.6",
+    "dotenv": "^16.3.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

@@ -38,9 +38,6 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// Жёсткий CORS (разрешаем только свой фронтенд)
-import cors from "cors";
-
 app.use(cors({
   origin: process.env.FRONTEND_URL || "http://localhost:3000",
   methods: ["GET", "POST", "PUT", "DELETE"],
